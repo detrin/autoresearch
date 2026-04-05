@@ -1,5 +1,5 @@
 import mlflow
-from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
 
@@ -22,7 +22,7 @@ for col in cat_cols:
 X_train, y_train = train[feature_cols], train[TARGET]
 X_val, y_val = val[feature_cols], val[TARGET]
 
-model = LogisticRegression(max_iter=1000)
+model = RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=42)
 model.fit(X_train, y_train)
 probs = model.predict_proba(X_val)[:, 1]
 
@@ -31,6 +31,6 @@ print_results(score)
 
 with mlflow.start_run():
     mlflow.log_metric("val_1-auc_roc", score)
-    mlflow.log_param("model", "LogisticRegression")
-    mlflow.log_param("description", "baseline: label-encoded cats, logistic regression")
+    mlflow.log_param("model", "RandomForestClassifier")
+    mlflow.log_param("description", "random forest 200 trees")
     mlflow.log_param("status", "keep")
