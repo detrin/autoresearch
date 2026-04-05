@@ -1,8 +1,9 @@
 import mlflow
 import numpy as np
-import optuna
+import polars as pl
 import lightgbm as lgb
 from sklearn.preprocessing import LabelEncoder
+from datasci_toolkit import OptimalBinner
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
 
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -29,15 +30,34 @@ zip_stats["zip_te_smooth"] = (
     (zip_stats["zip_te_count"] * zip_stats["zip_te_mean"] + smoothing * global_mean)
     / (zip_stats["zip_te_count"] + smoothing)
 )
-
 train = train.merge(zip_stats[["zip", "zip_te_smooth", "zip_te_count", "zip_te_std"]], on="zip", how="left")
 val = val.merge(zip_stats[["zip", "zip_te_smooth", "zip_te_count", "zip_te_std"]], on="zip", how="left")
 val["zip_te_smooth"] = val["zip_te_smooth"].fillna(global_mean)
 val["zip_te_count"] = val["zip_te_count"].fillna(0)
 val["zip_te_std"] = val["zip_te_std"].fillna(0)
 
+bin_cols = ["sqft", "year_built", "beds", "baths", "property_age"]
+y_train_series = train[TARGET]
+train_pl = pl.from_pandas(train)
+val_pl = pl.from_pandas(val)
+y_pl = pl.from_pandas(y_train_series).to_series()
+
+bin_feature_names = []
+for col in bin_cols:
+    try:
+        x_series = train_pl[col].cast(pl.Float64)
+        binner = OptimalBinner().fit(x_series, y_pl)
+        train_binned = binner.transform(x_series)
+        val_binned = binner.transform(val_pl[col].cast(pl.Float64))
+        bin_name = f"{col}_bin"
+        train[bin_name] = train_binned.to_pandas().values
+        val[bin_name] = val_binned.to_pandas().values
+        bin_feature_names.append(bin_name)
+    except Exception:
+        pass
+
 extra_cols = ["property_age", "sqft_per_bed", "sqft_per_bath", "total_rooms", "bed_bath_ratio",
-              "zip_te_smooth", "zip_te_count", "zip_te_std"]
+              "zip_te_smooth", "zip_te_count", "zip_te_std"] + bin_feature_names
 feature_cols = feature_cols + extra_cols
 
 cat_cols = train[feature_cols].select_dtypes(include="object").columns.tolist()
@@ -51,35 +71,21 @@ for col in cat_cols:
 X_train, y_train = train[feature_cols].fillna(-1), train[TARGET]
 X_val, y_val = val[feature_cols].fillna(-1), val[TARGET]
 
-def objective(trial):
-    params = {
-        "n_estimators": 2000,
-        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
-        "num_leaves": trial.suggest_int("num_leaves", 15, 255),
-        "max_depth": trial.suggest_int("max_depth", 3, 15),
-        "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
-        "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
-        "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
-        "random_state": 42,
-        "verbosity": -1,
-    }
-    m = lgb.LGBMRegressor(**params)
-    m.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)])
-    preds = m.predict(X_val)
-    return evaluate(y_val, preds)
+params = {
+    "n_estimators": 2000,
+    "learning_rate": 0.021,
+    "num_leaves": 107,
+    "max_depth": 13,
+    "min_child_samples": 22,
+    "subsample": 0.626,
+    "colsample_bytree": 0.503,
+    "reg_alpha": 0.369,
+    "reg_lambda": 9.581,
+    "random_state": 42,
+    "verbosity": -1,
+}
 
-optuna.logging.set_verbosity(optuna.logging.WARNING)
-study = optuna.create_study(direction="minimize")
-study.optimize(objective, n_trials=100, timeout=300)
-
-best_params = study.best_params
-best_params["n_estimators"] = 2000
-best_params["random_state"] = 42
-best_params["verbosity"] = -1
-
-model = lgb.LGBMRegressor(**best_params)
+model = lgb.LGBMRegressor(**params)
 model.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)])
 preds = model.predict(X_val)
 
@@ -88,8 +94,6 @@ print_results(score)
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LGBMRegressor-optuna")
-    mlflow.log_param("description", f"optuna 100 trials, zip target enc, best={study.best_value:.0f}")
+    mlflow.log_param("model", "LGBMRegressor-tuned")
+    mlflow.log_param("description", "baked optuna params + OptimalBinner 1D features")
     mlflow.log_param("status", "keep")
-    for k, v in best_params.items():
-        mlflow.log_param(k, v)
