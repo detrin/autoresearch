@@ -19,24 +19,42 @@ for df in [train, val]:
     df["sqft_per_bath"] = df["sqft"] / df["baths"].replace(0, np.nan)
     df["total_rooms"] = df["beds"] + df["baths"]
     df["bed_bath_ratio"] = df["beds"] / df["baths"].replace(0, np.nan)
+    df["sqft_x_baths"] = df["sqft"] * df["baths"]
+    df["log_sqft"] = np.log1p(df["sqft"])
 
 global_mean = train[TARGET].mean()
 smoothing = 10
-zip_stats = train.groupby("zip")[TARGET].agg(["mean", "count", "std"]).reset_index()
-zip_stats.columns = ["zip", "zip_te_mean", "zip_te_count", "zip_te_std"]
-zip_stats["zip_te_std"] = zip_stats["zip_te_std"].fillna(0)
-zip_stats["zip_te_smooth"] = (
-    (zip_stats["zip_te_count"] * zip_stats["zip_te_mean"] + smoothing * global_mean)
-    / (zip_stats["zip_te_count"] + smoothing)
+
+for grp_col in ["zip", "type"]:
+    stats = train.groupby(grp_col)[TARGET].agg(["mean", "count", "std", "median"]).reset_index()
+    stats.columns = [grp_col, f"{grp_col}_te_mean", f"{grp_col}_te_count", f"{grp_col}_te_std", f"{grp_col}_te_median"]
+    stats[f"{grp_col}_te_std"] = stats[f"{grp_col}_te_std"].fillna(0)
+    stats[f"{grp_col}_te_smooth"] = (
+        (stats[f"{grp_col}_te_count"] * stats[f"{grp_col}_te_mean"] + smoothing * global_mean)
+        / (stats[f"{grp_col}_te_count"] + smoothing)
+    )
+    merge_cols = [grp_col, f"{grp_col}_te_smooth", f"{grp_col}_te_count", f"{grp_col}_te_std", f"{grp_col}_te_median"]
+    train = train.merge(stats[merge_cols], on=grp_col, how="left")
+    val = val.merge(stats[merge_cols], on=grp_col, how="left")
+    for c in merge_cols[1:]:
+        fill = global_mean if "smooth" in c or "median" in c else 0
+        val[c] = val[c].fillna(fill)
+
+zip_type_stats = train.groupby(["zip", "type"])[TARGET].agg(["mean", "count"]).reset_index()
+zip_type_stats.columns = ["zip", "type", "zip_type_te_mean", "zip_type_te_count"]
+zip_type_stats["zip_type_te_smooth"] = (
+    (zip_type_stats["zip_type_te_count"] * zip_type_stats["zip_type_te_mean"] + smoothing * global_mean)
+    / (zip_type_stats["zip_type_te_count"] + smoothing)
 )
-train = train.merge(zip_stats[["zip", "zip_te_smooth", "zip_te_count", "zip_te_std"]], on="zip", how="left")
-val = val.merge(zip_stats[["zip", "zip_te_smooth", "zip_te_count", "zip_te_std"]], on="zip", how="left")
-val["zip_te_smooth"] = val["zip_te_smooth"].fillna(global_mean)
-val["zip_te_count"] = val["zip_te_count"].fillna(0)
-val["zip_te_std"] = val["zip_te_std"].fillna(0)
+train = train.merge(zip_type_stats[["zip", "type", "zip_type_te_smooth"]], on=["zip", "type"], how="left")
+val = val.merge(zip_type_stats[["zip", "type", "zip_type_te_smooth"]], on=["zip", "type"], how="left")
+val["zip_type_te_smooth"] = val["zip_type_te_smooth"].fillna(global_mean)
 
 extra_cols = ["property_age", "sqft_per_bed", "sqft_per_bath", "total_rooms", "bed_bath_ratio",
-              "zip_te_smooth", "zip_te_count", "zip_te_std"]
+              "sqft_x_baths", "log_sqft",
+              "zip_te_smooth", "zip_te_count", "zip_te_std", "zip_te_median",
+              "type_te_smooth", "type_te_count", "type_te_std", "type_te_median",
+              "zip_type_te_smooth"]
 feature_cols = feature_cols + extra_cols
 
 cat_cols = train[feature_cols].select_dtypes(include="object").columns.tolist()
@@ -70,8 +88,7 @@ def objective(trial):
     m = lgb.LGBMRegressor(**params)
     m.fit(X_train, y_train_log, eval_set=[(X_val, np.log1p(y_val))],
           callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
-    preds_log = m.predict(X_val)
-    preds = np.expm1(preds_log)
+    preds = np.expm1(m.predict(X_val))
     return evaluate(y_val, preds)
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -93,8 +110,8 @@ print_results(score)
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LGBMRegressor-log-target-optuna")
-    mlflow.log_param("description", f"log1p target + optuna 150 trials, best_trial={study.best_value:.0f}")
+    mlflow.log_param("model", "LGBMRegressor-log-ext-feats")
+    mlflow.log_param("description", f"log target + zip+type+zip_type te + interactions, optuna 150, best={study.best_value:.0f}")
     mlflow.log_param("status", "keep")
     for k, v in best_params.items():
         mlflow.log_param(k, v)
