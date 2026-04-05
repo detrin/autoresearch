@@ -19,7 +19,25 @@ for df in [train, val]:
     df["total_rooms"] = df["beds"] + df["baths"]
     df["bed_bath_ratio"] = df["beds"] / df["baths"].replace(0, np.nan)
 
-extra_cols = ["property_age", "sqft_per_bed", "sqft_per_bath", "total_rooms", "bed_bath_ratio"]
+global_mean = train[TARGET].mean()
+zip_stats = train.groupby("zip")[TARGET].agg(["mean", "count", "std"]).reset_index()
+zip_stats.columns = ["zip", "zip_target_mean", "zip_count", "zip_target_std"]
+zip_stats["zip_target_std"] = zip_stats["zip_target_std"].fillna(0)
+
+smoothing = 10
+zip_stats["zip_target_smooth"] = (
+    (zip_stats["zip_count"] * zip_stats["zip_target_mean"] + smoothing * global_mean)
+    / (zip_stats["zip_count"] + smoothing)
+)
+
+train = train.merge(zip_stats[["zip", "zip_target_smooth", "zip_count", "zip_target_std"]], on="zip", how="left")
+val = val.merge(zip_stats[["zip", "zip_target_smooth", "zip_count", "zip_target_std"]], on="zip", how="left")
+val["zip_target_smooth"] = val["zip_target_smooth"].fillna(global_mean)
+val["zip_count"] = val["zip_count"].fillna(0)
+val["zip_target_std"] = val["zip_target_std"].fillna(0)
+
+extra_cols = ["property_age", "sqft_per_bed", "sqft_per_bath", "total_rooms", "bed_bath_ratio",
+              "zip_target_smooth", "zip_count", "zip_target_std"]
 feature_cols = feature_cols + extra_cols
 
 cat_cols = train[feature_cols].select_dtypes(include="object").columns.tolist()
@@ -43,5 +61,5 @@ print_results(score)
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
     mlflow.log_param("model", "LGBMRegressor")
-    mlflow.log_param("description", "feat eng: property_age, sqft_per_bed, sqft_per_bath, total_rooms, bed_bath_ratio")
+    mlflow.log_param("description", "target encoding for zip + basic feat eng")
     mlflow.log_param("status", "keep")
