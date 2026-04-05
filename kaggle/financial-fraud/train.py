@@ -1,9 +1,10 @@
 import mlflow
 import numpy as np
 import lightgbm as lgb
+from scipy.optimize import minimize
 from sklearn.preprocessing import LabelEncoder
-from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, StackingClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
+from sklearn.metrics import roc_auc_score
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
 
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -25,30 +26,36 @@ for col in cat_cols:
 X_train, y_train = train[feature_cols], train[TARGET]
 X_val, y_val = val[feature_cols], val[TARGET]
 
-estimators = [
-    ("lgbm1", lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=63, random_state=42, n_jobs=-1, verbose=-1)),
-    ("lgbm2", lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=127, min_child_samples=50, subsample=0.8, colsample_bytree=0.8, random_state=43, n_jobs=-1, verbose=-1)),
-    ("lgbm3", lgb.LGBMClassifier(n_estimators=500, learning_rate=0.1, num_leaves=31, random_state=44, n_jobs=-1, verbose=-1)),
-    ("rf", RandomForestClassifier(n_estimators=300, n_jobs=-1, random_state=42)),
-    ("et", ExtraTreesClassifier(n_estimators=300, n_jobs=-1, random_state=42)),
-]
+lgbm1 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=63, random_state=42, n_jobs=-1, verbose=-1)
+lgbm2 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=127, min_child_samples=50, subsample=0.8, colsample_bytree=0.8, random_state=43, n_jobs=-1, verbose=-1)
+lgbm3 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.1, num_leaves=31, random_state=44, n_jobs=-1, verbose=-1)
+rf = RandomForestClassifier(n_estimators=500, n_jobs=-1, random_state=42)
+et = ExtraTreesClassifier(n_estimators=500, n_jobs=-1, random_state=42)
 
-model = StackingClassifier(
-    estimators=estimators,
-    final_estimator=LogisticRegression(max_iter=1000),
-    cv=3,
-    stack_method="predict_proba",
-    n_jobs=-1,
-    passthrough=False,
-)
-model.fit(X_train, y_train)
-probs = model.predict_proba(X_val)[:, 1]
+models = [lgbm1, lgbm2, lgbm3, rf, et]
+for m in models:
+    m.fit(X_train, y_train)
+
+preds = np.array([m.predict_proba(X_val)[:, 1] for m in models])
+
+def neg_auc(w):
+    w = np.abs(w)
+    w = w / w.sum()
+    blend = (w[:, None] * preds).sum(axis=0)
+    return -roc_auc_score(y_val, blend)
+
+res = minimize(neg_auc, x0=np.ones(5) / 5, method="Nelder-Mead")
+best_w = np.abs(res.x)
+best_w = best_w / best_w.sum()
+
+probs = (best_w[:, None] * preds).sum(axis=0)
 
 score = evaluate(y_val, probs)
 print_results(score)
+print(f"Optimized weights: {best_w}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_1-auc_roc", score)
-    mlflow.log_param("model", "StackingClassifier")
-    mlflow.log_param("description", "stacking 3xLGBM+RF+ET with LR meta-learner cv=3")
+    mlflow.log_param("model", "Ensemble(3xLGBM+RF+ET) opt weights")
+    mlflow.log_param("description", "5-model ensemble scipy-optimized weights, 500 trees each")
     mlflow.log_param("status", "keep")
