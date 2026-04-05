@@ -1,0 +1,23 @@
+[project]
+name = "job-salary-prediction"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "numpy",
+    "scikit-learn",
+    "mlflow",
+]
+
+[project.optional-dependencies]
+recommended = [
+    "datasci-toolkit",
+    "optbinning",
+    "lightgbm",
+    "optuna",
+    "shap",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.backends._legacy:_Backend"

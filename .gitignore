@@ -1,0 +1,8 @@
+mlflow/
+mlruns/
+.worktrees/
+*.log
+results.tsv
+.venv/
+__pycache__/
+*.pyc
