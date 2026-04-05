@@ -20,24 +20,31 @@ for df in [train, val]:
     df["bed_bath_ratio"] = df["beds"] / df["baths"].replace(0, np.nan)
 
 global_mean = train[TARGET].mean()
-zip_stats = train.groupby("zip")[TARGET].agg(["mean", "count", "std"]).reset_index()
-zip_stats.columns = ["zip", "zip_target_mean", "zip_count", "zip_target_std"]
-zip_stats["zip_target_std"] = zip_stats["zip_target_std"].fillna(0)
-
 smoothing = 10
-zip_stats["zip_target_smooth"] = (
-    (zip_stats["zip_count"] * zip_stats["zip_target_mean"] + smoothing * global_mean)
-    / (zip_stats["zip_count"] + smoothing)
-)
 
-train = train.merge(zip_stats[["zip", "zip_target_smooth", "zip_count", "zip_target_std"]], on="zip", how="left")
-val = val.merge(zip_stats[["zip", "zip_target_smooth", "zip_count", "zip_target_std"]], on="zip", how="left")
-val["zip_target_smooth"] = val["zip_target_smooth"].fillna(global_mean)
-val["zip_count"] = val["zip_count"].fillna(0)
-val["zip_target_std"] = val["zip_target_std"].fillna(0)
+def target_encode(train_df, val_df, col, target, smooth=10):
+    stats = train_df.groupby(col)[target].agg(["mean", "count", "std", "median"]).reset_index()
+    stats.columns = [col, f"{col}_te_mean", f"{col}_te_count", f"{col}_te_std", f"{col}_te_median"]
+    stats[f"{col}_te_std"] = stats[f"{col}_te_std"].fillna(0)
+    gm = train_df[target].mean()
+    stats[f"{col}_te_smooth"] = (
+        (stats[f"{col}_te_count"] * stats[f"{col}_te_mean"] + smooth * gm)
+        / (stats[f"{col}_te_count"] + smooth)
+    )
+    out_cols = [col, f"{col}_te_smooth", f"{col}_te_count", f"{col}_te_std", f"{col}_te_median"]
+    tr = train_df.merge(stats[out_cols], on=col, how="left")
+    vl = val_df.merge(stats[out_cols], on=col, how="left")
+    for c in out_cols[1:]:
+        fill = gm if "smooth" in c or "mean" in c or "median" in c else 0
+        vl[c] = vl[c].fillna(fill)
+    return tr, vl, out_cols[1:]
 
-extra_cols = ["property_age", "sqft_per_bed", "sqft_per_bath", "total_rooms", "bed_bath_ratio",
-              "zip_target_smooth", "zip_count", "zip_target_std"]
+te_feature_cols = []
+for col in ["zip", "type", "sub_type"]:
+    train, val, new_cols = target_encode(train, val, col, TARGET, smooth=smoothing)
+    te_feature_cols.extend(new_cols)
+
+extra_cols = ["property_age", "sqft_per_bed", "sqft_per_bath", "total_rooms", "bed_bath_ratio"] + te_feature_cols
 feature_cols = feature_cols + extra_cols
 
 cat_cols = train[feature_cols].select_dtypes(include="object").columns.tolist()
@@ -61,5 +68,5 @@ print_results(score)
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
     mlflow.log_param("model", "LGBMRegressor")
-    mlflow.log_param("description", "target encoding for zip + basic feat eng")
+    mlflow.log_param("description", "target enc zip+type+sub_type with median+std+smooth")
     mlflow.log_param("status", "keep")
