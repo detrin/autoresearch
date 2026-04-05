@@ -1,7 +1,7 @@
 import mlflow
 import numpy as np
+import pandas as pd
 import lightgbm as lgb
-import xgboost as xgb
 from catboost import CatBoostClassifier
 from scipy.optimize import minimize
 from sklearn.preprocessing import LabelEncoder
@@ -13,6 +13,20 @@ mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 mlflow.set_experiment(MLFLOW_EXPERIMENT)
 
 train, val = load_data()
+
+for df in [train, val]:
+    ts = pd.to_datetime(df["transaction_timestamp"])
+    df["ts_minute"] = ts.dt.minute
+    df["ts_dayofyear"] = ts.dt.dayofyear
+    df["ts_weekofyear"] = ts.dt.isocalendar().week.astype(int)
+
+user_fraud_rate = train.groupby("user_id")[TARGET].mean()
+user_tx_count = train["user_id"].value_counts()
+global_fraud = train[TARGET].mean()
+
+for df in [train, val]:
+    df["user_fraud_rate"] = df["user_id"].map(user_fraud_rate).fillna(global_fraud)
+    df["user_tx_count"] = df["user_id"].map(user_tx_count).fillna(0)
 
 drop_cols = [TARGET, "transaction_id", "user_id", "organization", "transaction_timestamp"]
 feature_cols = [c for c in train.columns if c not in drop_cols]
@@ -40,26 +54,23 @@ for col in cat_cols:
 
 lgbm1 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=63, random_state=42, n_jobs=-1, verbose=-1)
 lgbm2 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=127, min_child_samples=50, subsample=0.8, colsample_bytree=0.8, random_state=43, n_jobs=-1, verbose=-1)
-xgb1 = xgb.XGBClassifier(n_estimators=500, learning_rate=0.05, max_depth=8, subsample=0.8, colsample_bytree=0.8, random_state=44, n_jobs=-1, verbosity=0)
-cb1 = CatBoostClassifier(iterations=500, learning_rate=0.05, depth=8, random_seed=44, verbose=0, cat_features=cat_indices)
-cb2 = CatBoostClassifier(iterations=500, learning_rate=0.1, depth=6, random_seed=45, verbose=0, cat_features=cat_indices, l2_leaf_reg=3)
+cb = CatBoostClassifier(iterations=500, learning_rate=0.05, depth=8, random_seed=44, verbose=0, cat_features=cat_indices)
 rf = RandomForestClassifier(n_estimators=500, n_jobs=-1, random_state=42)
 et = ExtraTreesClassifier(n_estimators=500, n_jobs=-1, random_state=42)
 
 lgbm1.fit(X_train_enc, y_train)
 lgbm2.fit(X_train_enc, y_train)
-xgb1.fit(X_train_enc, y_train)
-cb1.fit(X_train_cat, y_train)
-cb2.fit(X_train_cat, y_train)
+cb.fit(X_train_cat, y_train)
 rf.fit(X_train_enc, y_train)
 et.fit(X_train_enc, y_train)
 
-models_enc = [lgbm1, lgbm2, xgb1, rf, et]
-models_cat = [cb1, cb2]
-
-preds_list = [m.predict_proba(X_val_enc)[:, 1] for m in models_enc]
-preds_list += [m.predict_proba(X_val_cat)[:, 1] for m in models_cat]
-preds = np.array(preds_list)
+preds = np.array([
+    lgbm1.predict_proba(X_val_enc)[:, 1],
+    lgbm2.predict_proba(X_val_enc)[:, 1],
+    cb.predict_proba(X_val_cat)[:, 1],
+    rf.predict_proba(X_val_enc)[:, 1],
+    et.predict_proba(X_val_enc)[:, 1],
+])
 
 def neg_auc(w):
     w = np.abs(w)
@@ -67,8 +78,7 @@ def neg_auc(w):
     blend = (w[:, None] * preds).sum(axis=0)
     return -roc_auc_score(y_val, blend)
 
-n = len(preds)
-res = minimize(neg_auc, x0=np.ones(n) / n, method="Nelder-Mead")
+res = minimize(neg_auc, x0=np.ones(5) / 5, method="Nelder-Mead")
 best_w = np.abs(res.x)
 best_w = best_w / best_w.sum()
 
@@ -80,6 +90,6 @@ print(f"Optimized weights: {best_w}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_1-auc_roc", score)
-    mlflow.log_param("model", "Ensemble(2xLGBM+XGB+2xCB+RF+ET)")
-    mlflow.log_param("description", "7-model ensemble: 2lgbm+xgb+2catboost+rf+et opt weights")
+    mlflow.log_param("model", "Ensemble(2xLGBM+CB+RF+ET)")
+    mlflow.log_param("description", "5-model ensemble + timestamp feats + user stats")
     mlflow.log_param("status", "keep")
