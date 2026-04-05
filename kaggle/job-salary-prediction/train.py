@@ -1,5 +1,5 @@
 import mlflow
-from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import LabelEncoder
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
 
@@ -19,7 +19,7 @@ for col in cat_cols:
 X_train, y_train = train.drop(columns=[TARGET]), train[TARGET]
 X_val, y_val = val.drop(columns=[TARGET]), val[TARGET]
 
-model = LinearRegression()
+model = RandomForestRegressor(n_estimators=200, n_jobs=-1, random_state=42)
 model.fit(X_train, y_train)
 preds = model.predict(X_val)
 
@@ -28,6 +28,6 @@ print_results(score)
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LinearRegression")
-    mlflow.log_param("description", "baseline: label-encoded cats + linear regression")
+    mlflow.log_param("model", "RandomForestRegressor")
+    mlflow.log_param("description", "RandomForest 200 trees + label-encoded cats")
     mlflow.log_param("status", "keep")
