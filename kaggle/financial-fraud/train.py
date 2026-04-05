@@ -1,6 +1,7 @@
 import mlflow
 import numpy as np
 import lightgbm as lgb
+import xgboost as xgb
 from scipy.optimize import minimize
 from sklearn.preprocessing import LabelEncoder
 from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
@@ -26,13 +27,13 @@ for col in cat_cols:
 X_train, y_train = train[feature_cols], train[TARGET]
 X_val, y_val = val[feature_cols], val[TARGET]
 
-lgbm1 = lgb.LGBMClassifier(n_estimators=800, learning_rate=0.05, num_leaves=63, random_state=42, n_jobs=-1, verbose=-1)
-lgbm2 = lgb.LGBMClassifier(n_estimators=800, learning_rate=0.05, num_leaves=127, min_child_samples=50, subsample=0.8, colsample_bytree=0.8, random_state=43, n_jobs=-1, verbose=-1)
-lgbm3 = lgb.LGBMClassifier(n_estimators=800, learning_rate=0.02, num_leaves=63, min_child_samples=30, subsample=0.9, colsample_bytree=0.9, reg_alpha=0.05, reg_lambda=0.05, random_state=45, n_jobs=-1, verbose=-1)
+lgbm1 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=63, random_state=42, n_jobs=-1, verbose=-1)
+lgbm2 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=127, min_child_samples=50, subsample=0.8, colsample_bytree=0.8, random_state=43, n_jobs=-1, verbose=-1)
+xgb1 = xgb.XGBClassifier(n_estimators=500, learning_rate=0.05, max_depth=6, subsample=0.8, colsample_bytree=0.8, random_state=44, n_jobs=-1, verbosity=0, eval_metric="auc")
 rf = RandomForestClassifier(n_estimators=500, n_jobs=-1, random_state=42)
 et = ExtraTreesClassifier(n_estimators=500, n_jobs=-1, random_state=42)
 
-models = [lgbm1, lgbm2, lgbm3, rf, et]
+models = [lgbm1, lgbm2, xgb1, rf, et]
 for m in models:
     m.fit(X_train, y_train)
 
@@ -56,6 +57,6 @@ print(f"Optimized weights: {best_w}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_1-auc_roc", score)
-    mlflow.log_param("model", "Ensemble(3xLGBM+RF+ET) v2")
-    mlflow.log_param("description", "5-model ensemble v2: 800 trees lgbm, new lgbm3, 500 trees rf/et")
+    mlflow.log_param("model", "Ensemble(2xLGBM+XGB+RF+ET)")
+    mlflow.log_param("description", "5-model ensemble: 2 lgbm + xgboost + rf + et, opt weights")
     mlflow.log_param("status", "keep")
