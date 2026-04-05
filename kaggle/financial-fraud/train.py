@@ -2,7 +2,7 @@ import mlflow
 import numpy as np
 import lightgbm as lgb
 from sklearn.preprocessing import LabelEncoder
-from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
 
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -24,44 +24,26 @@ for col in cat_cols:
 X_train, y_train = train[feature_cols], train[TARGET]
 X_val, y_val = val[feature_cols], val[TARGET]
 
-lgbm1 = lgb.LGBMClassifier(
-    n_estimators=500,
-    learning_rate=0.05,
-    num_leaves=63,
-    random_state=42,
-    n_jobs=-1,
-    verbose=-1,
-)
+lgbm1 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=63, random_state=42, n_jobs=-1, verbose=-1)
+lgbm2 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=127, min_child_samples=50, subsample=0.8, colsample_bytree=0.8, random_state=43, n_jobs=-1, verbose=-1)
+lgbm3 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.1, num_leaves=31, random_state=44, n_jobs=-1, verbose=-1)
+rf = RandomForestClassifier(n_estimators=300, n_jobs=-1, random_state=42)
+et = ExtraTreesClassifier(n_estimators=300, n_jobs=-1, random_state=42)
 
-lgbm2 = lgb.LGBMClassifier(
-    n_estimators=500,
-    learning_rate=0.05,
-    num_leaves=127,
-    min_child_samples=50,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    random_state=43,
-    n_jobs=-1,
-    verbose=-1,
-)
+models = [lgbm1, lgbm2, lgbm3, rf, et]
+weights = [0.25, 0.25, 0.15, 0.2, 0.15]
 
-rf = RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=42)
+for m in models:
+    m.fit(X_train, y_train)
 
-lgbm1.fit(X_train, y_train)
-lgbm2.fit(X_train, y_train)
-rf.fit(X_train, y_train)
-
-p1 = lgbm1.predict_proba(X_val)[:, 1]
-p2 = lgbm2.predict_proba(X_val)[:, 1]
-p3 = rf.predict_proba(X_val)[:, 1]
-
-probs = 0.4 * p1 + 0.4 * p2 + 0.2 * p3
+preds = [m.predict_proba(X_val)[:, 1] for m in models]
+probs = sum(w * p for w, p in zip(weights, preds))
 
 score = evaluate(y_val, probs)
 print_results(score)
 
 with mlflow.start_run():
     mlflow.log_metric("val_1-auc_roc", score)
-    mlflow.log_param("model", "Ensemble(2xLGBM+RF)")
-    mlflow.log_param("description", "weighted ensemble 2 lgbm + rf")
+    mlflow.log_param("model", "Ensemble(3xLGBM+RF+ET)")
+    mlflow.log_param("description", "5-model ensemble: 3 lgbm + rf + extra trees")
     mlflow.log_param("status", "keep")
