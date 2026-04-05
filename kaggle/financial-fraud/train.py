@@ -26,9 +26,9 @@ for col in cat_cols:
 X_train, y_train = train[feature_cols], train[TARGET]
 X_val, y_val = val[feature_cols], val[TARGET]
 
-lgbm1 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=63, random_state=42, n_jobs=-1, verbose=-1)
-lgbm2 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=127, min_child_samples=50, subsample=0.8, colsample_bytree=0.8, random_state=43, n_jobs=-1, verbose=-1)
-lgbm3 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.1, num_leaves=31, random_state=44, n_jobs=-1, verbose=-1)
+lgbm1 = lgb.LGBMClassifier(n_estimators=800, learning_rate=0.05, num_leaves=63, random_state=42, n_jobs=-1, verbose=-1)
+lgbm2 = lgb.LGBMClassifier(n_estimators=800, learning_rate=0.05, num_leaves=127, min_child_samples=50, subsample=0.8, colsample_bytree=0.8, random_state=43, n_jobs=-1, verbose=-1)
+lgbm3 = lgb.LGBMClassifier(n_estimators=800, learning_rate=0.02, num_leaves=63, min_child_samples=30, subsample=0.9, colsample_bytree=0.9, reg_alpha=0.05, reg_lambda=0.05, random_state=45, n_jobs=-1, verbose=-1)
 rf = RandomForestClassifier(n_estimators=500, n_jobs=-1, random_state=42)
 et = ExtraTreesClassifier(n_estimators=500, n_jobs=-1, random_state=42)
 
@@ -44,7 +44,7 @@ def neg_auc(w):
     blend = (w[:, None] * preds).sum(axis=0)
     return -roc_auc_score(y_val, blend)
 
-res = minimize(neg_auc, x0=np.ones(5) / 5, method="Nelder-Mead")
+res = minimize(neg_auc, x0=np.ones(len(models)) / len(models), method="Nelder-Mead")
 best_w = np.abs(res.x)
 best_w = best_w / best_w.sum()
 
@@ -56,6 +56,6 @@ print(f"Optimized weights: {best_w}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_1-auc_roc", score)
-    mlflow.log_param("model", "Ensemble(3xLGBM+RF+ET) opt weights")
-    mlflow.log_param("description", "5-model ensemble scipy-optimized weights, 500 trees each")
+    mlflow.log_param("model", "Ensemble(3xLGBM+RF+ET) v2")
+    mlflow.log_param("description", "5-model ensemble v2: 800 trees lgbm, new lgbm3, 500 trees rf/et")
     mlflow.log_param("status", "keep")
