@@ -47,8 +47,10 @@ for col in cat_cols:
     val[col] = le.transform(val[col].astype(str))
     encoders[col] = le
 
-X_train, y_train = train[feature_cols].fillna(-1), train[TARGET]
-X_val, y_val = val[feature_cols].fillna(-1), val[TARGET]
+X_train = train[feature_cols].fillna(-1)
+X_val = val[feature_cols].fillna(-1)
+y_train_log = np.log1p(train[TARGET])
+y_val = val[TARGET]
 
 def objective(trial):
     params = {
@@ -66,12 +68,15 @@ def objective(trial):
         "verbosity": -1,
     }
     m = lgb.LGBMRegressor(**params)
-    m.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
-    return evaluate(y_val, m.predict(X_val))
+    m.fit(X_train, y_train_log, eval_set=[(X_val, np.log1p(y_val))],
+          callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
+    preds_log = m.predict(X_val)
+    preds = np.expm1(preds_log)
+    return evaluate(y_val, preds)
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 study = optuna.create_study(direction="minimize")
-study.optimize(objective, n_trials=200, timeout=480)
+study.optimize(objective, n_trials=150, timeout=480)
 
 best_params = study.best_params
 best_params["n_estimators"] = 3000
@@ -79,16 +84,17 @@ best_params["random_state"] = 42
 best_params["verbosity"] = -1
 
 model = lgb.LGBMRegressor(**best_params)
-model.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
-preds = model.predict(X_val)
+model.fit(X_train, y_train_log, eval_set=[(X_val, np.log1p(y_val))],
+          callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
+preds = np.expm1(model.predict(X_val))
 
 score = evaluate(y_val, preds)
 print_results(score)
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LGBMRegressor-optuna200")
-    mlflow.log_param("description", f"optuna 200 trials, zip te, wider search, best_trial={study.best_value:.0f}")
+    mlflow.log_param("model", "LGBMRegressor-log-target-optuna")
+    mlflow.log_param("description", f"log1p target + optuna 150 trials, best_trial={study.best_value:.0f}")
     mlflow.log_param("status", "keep")
     for k, v in best_params.items():
         mlflow.log_param(k, v)
