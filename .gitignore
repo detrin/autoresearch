@@ -6,3 +6,4 @@ results.tsv
 .venv/
 __pycache__/
 *.pyc
+kaggle/**/*.csv
