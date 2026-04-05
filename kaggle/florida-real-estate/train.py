@@ -1,5 +1,6 @@
 import mlflow
 import numpy as np
+import optuna
 import lightgbm as lgb
 from sklearn.preprocessing import LabelEncoder
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
@@ -18,30 +19,24 @@ for df in [train, val]:
     df["sqft_per_bath"] = df["sqft"] / df["baths"].replace(0, np.nan)
     df["total_rooms"] = df["beds"] + df["baths"]
     df["bed_bath_ratio"] = df["beds"] / df["baths"].replace(0, np.nan)
-    df["sqft_x_baths"] = df["sqft"] * df["baths"]
-    df["age_x_sqft"] = df["property_age"] * df["sqft"]
-    df["has_garage"] = (df["garage"] > 0).astype(int)
-    df["is_new"] = (df["property_age"] <= 5).astype(int)
 
 global_mean = train[TARGET].mean()
 smoothing = 10
-zip_stats = train.groupby("zip")[TARGET].agg(["mean", "count", "std", "median"]).reset_index()
-zip_stats.columns = ["zip", "zip_te_mean", "zip_te_count", "zip_te_std", "zip_te_median"]
+zip_stats = train.groupby("zip")[TARGET].agg(["mean", "count", "std"]).reset_index()
+zip_stats.columns = ["zip", "zip_te_mean", "zip_te_count", "zip_te_std"]
 zip_stats["zip_te_std"] = zip_stats["zip_te_std"].fillna(0)
 zip_stats["zip_te_smooth"] = (
     (zip_stats["zip_te_count"] * zip_stats["zip_te_mean"] + smoothing * global_mean)
     / (zip_stats["zip_te_count"] + smoothing)
 )
-train = train.merge(zip_stats[["zip", "zip_te_smooth", "zip_te_count", "zip_te_std", "zip_te_median"]], on="zip", how="left")
-val = val.merge(zip_stats[["zip", "zip_te_smooth", "zip_te_count", "zip_te_std", "zip_te_median"]], on="zip", how="left")
-for c in ["zip_te_smooth", "zip_te_median"]:
-    val[c] = val[c].fillna(global_mean)
-for c in ["zip_te_count", "zip_te_std"]:
-    val[c] = val[c].fillna(0)
+train = train.merge(zip_stats[["zip", "zip_te_smooth", "zip_te_count", "zip_te_std"]], on="zip", how="left")
+val = val.merge(zip_stats[["zip", "zip_te_smooth", "zip_te_count", "zip_te_std"]], on="zip", how="left")
+val["zip_te_smooth"] = val["zip_te_smooth"].fillna(global_mean)
+val["zip_te_count"] = val["zip_te_count"].fillna(0)
+val["zip_te_std"] = val["zip_te_std"].fillna(0)
 
 extra_cols = ["property_age", "sqft_per_bed", "sqft_per_bath", "total_rooms", "bed_bath_ratio",
-              "sqft_x_baths", "age_x_sqft", "has_garage", "is_new",
-              "zip_te_smooth", "zip_te_count", "zip_te_std", "zip_te_median"]
+              "zip_te_smooth", "zip_te_count", "zip_te_std"]
 feature_cols = feature_cols + extra_cols
 
 cat_cols = train[feature_cols].select_dtypes(include="object").columns.tolist()
@@ -55,22 +50,36 @@ for col in cat_cols:
 X_train, y_train = train[feature_cols].fillna(-1), train[TARGET]
 X_val, y_val = val[feature_cols].fillna(-1), val[TARGET]
 
-params = {
-    "n_estimators": 2000,
-    "learning_rate": 0.021,
-    "num_leaves": 107,
-    "max_depth": 13,
-    "min_child_samples": 22,
-    "subsample": 0.626,
-    "colsample_bytree": 0.503,
-    "reg_alpha": 0.369,
-    "reg_lambda": 9.581,
-    "random_state": 42,
-    "verbosity": -1,
-}
+def objective(trial):
+    params = {
+        "n_estimators": 3000,
+        "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.15, log=True),
+        "num_leaves": trial.suggest_int("num_leaves", 20, 300),
+        "max_depth": trial.suggest_int("max_depth", 3, 20),
+        "min_child_samples": trial.suggest_int("min_child_samples", 3, 150),
+        "subsample": trial.suggest_float("subsample", 0.4, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.3, 1.0),
+        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 50.0, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 50.0, log=True),
+        "min_split_gain": trial.suggest_float("min_split_gain", 0.0, 1.0),
+        "random_state": 42,
+        "verbosity": -1,
+    }
+    m = lgb.LGBMRegressor(**params)
+    m.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
+    return evaluate(y_val, m.predict(X_val))
 
-model = lgb.LGBMRegressor(**params)
-model.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)])
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+study = optuna.create_study(direction="minimize")
+study.optimize(objective, n_trials=200, timeout=480)
+
+best_params = study.best_params
+best_params["n_estimators"] = 3000
+best_params["random_state"] = 42
+best_params["verbosity"] = -1
+
+model = lgb.LGBMRegressor(**best_params)
+model.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
 preds = model.predict(X_val)
 
 score = evaluate(y_val, preds)
@@ -78,6 +87,8 @@ print_results(score)
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LGBMRegressor-tuned")
-    mlflow.log_param("description", "tuned params + interaction feats + zip median + has_garage + is_new")
+    mlflow.log_param("model", "LGBMRegressor-optuna200")
+    mlflow.log_param("description", f"optuna 200 trials, zip te, wider search, best_trial={study.best_value:.0f}")
     mlflow.log_param("status", "keep")
+    for k, v in best_params.items():
+        mlflow.log_param(k, v)
