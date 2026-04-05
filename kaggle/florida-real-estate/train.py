@@ -1,5 +1,6 @@
 import mlflow
 import numpy as np
+import optuna
 import lightgbm as lgb
 from sklearn.preprocessing import LabelEncoder
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
@@ -21,30 +22,22 @@ for df in [train, val]:
 
 global_mean = train[TARGET].mean()
 smoothing = 10
+zip_stats = train.groupby("zip")[TARGET].agg(["mean", "count", "std"]).reset_index()
+zip_stats.columns = ["zip", "zip_te_mean", "zip_te_count", "zip_te_std"]
+zip_stats["zip_te_std"] = zip_stats["zip_te_std"].fillna(0)
+zip_stats["zip_te_smooth"] = (
+    (zip_stats["zip_te_count"] * zip_stats["zip_te_mean"] + smoothing * global_mean)
+    / (zip_stats["zip_te_count"] + smoothing)
+)
 
-def target_encode(train_df, val_df, col, target, smooth=10):
-    stats = train_df.groupby(col)[target].agg(["mean", "count", "std", "median"]).reset_index()
-    stats.columns = [col, f"{col}_te_mean", f"{col}_te_count", f"{col}_te_std", f"{col}_te_median"]
-    stats[f"{col}_te_std"] = stats[f"{col}_te_std"].fillna(0)
-    gm = train_df[target].mean()
-    stats[f"{col}_te_smooth"] = (
-        (stats[f"{col}_te_count"] * stats[f"{col}_te_mean"] + smooth * gm)
-        / (stats[f"{col}_te_count"] + smooth)
-    )
-    out_cols = [col, f"{col}_te_smooth", f"{col}_te_count", f"{col}_te_std", f"{col}_te_median"]
-    tr = train_df.merge(stats[out_cols], on=col, how="left")
-    vl = val_df.merge(stats[out_cols], on=col, how="left")
-    for c in out_cols[1:]:
-        fill = gm if "smooth" in c or "mean" in c or "median" in c else 0
-        vl[c] = vl[c].fillna(fill)
-    return tr, vl, out_cols[1:]
+train = train.merge(zip_stats[["zip", "zip_te_smooth", "zip_te_count", "zip_te_std"]], on="zip", how="left")
+val = val.merge(zip_stats[["zip", "zip_te_smooth", "zip_te_count", "zip_te_std"]], on="zip", how="left")
+val["zip_te_smooth"] = val["zip_te_smooth"].fillna(global_mean)
+val["zip_te_count"] = val["zip_te_count"].fillna(0)
+val["zip_te_std"] = val["zip_te_std"].fillna(0)
 
-te_feature_cols = []
-for col in ["zip", "type", "sub_type"]:
-    train, val, new_cols = target_encode(train, val, col, TARGET, smooth=smoothing)
-    te_feature_cols.extend(new_cols)
-
-extra_cols = ["property_age", "sqft_per_bed", "sqft_per_bath", "total_rooms", "bed_bath_ratio"] + te_feature_cols
+extra_cols = ["property_age", "sqft_per_bed", "sqft_per_bath", "total_rooms", "bed_bath_ratio",
+              "zip_te_smooth", "zip_te_count", "zip_te_std"]
 feature_cols = feature_cols + extra_cols
 
 cat_cols = train[feature_cols].select_dtypes(include="object").columns.tolist()
@@ -58,7 +51,35 @@ for col in cat_cols:
 X_train, y_train = train[feature_cols].fillna(-1), train[TARGET]
 X_val, y_val = val[feature_cols].fillna(-1), val[TARGET]
 
-model = lgb.LGBMRegressor(n_estimators=1000, learning_rate=0.05, num_leaves=63, random_state=42, verbosity=-1)
+def objective(trial):
+    params = {
+        "n_estimators": 2000,
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
+        "num_leaves": trial.suggest_int("num_leaves", 15, 255),
+        "max_depth": trial.suggest_int("max_depth", 3, 15),
+        "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
+        "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
+        "random_state": 42,
+        "verbosity": -1,
+    }
+    m = lgb.LGBMRegressor(**params)
+    m.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)])
+    preds = m.predict(X_val)
+    return evaluate(y_val, preds)
+
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+study = optuna.create_study(direction="minimize")
+study.optimize(objective, n_trials=100, timeout=300)
+
+best_params = study.best_params
+best_params["n_estimators"] = 2000
+best_params["random_state"] = 42
+best_params["verbosity"] = -1
+
+model = lgb.LGBMRegressor(**best_params)
 model.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)])
 preds = model.predict(X_val)
 
@@ -67,6 +88,8 @@ print_results(score)
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LGBMRegressor")
-    mlflow.log_param("description", "target enc zip+type+sub_type with median+std+smooth")
+    mlflow.log_param("model", "LGBMRegressor-optuna")
+    mlflow.log_param("description", f"optuna 100 trials, zip target enc, best={study.best_value:.0f}")
     mlflow.log_param("status", "keep")
+    for k, v in best_params.items():
+        mlflow.log_param(k, v)
