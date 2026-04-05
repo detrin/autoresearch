@@ -22,7 +22,22 @@ for col in cat_cols:
 X_train, y_train = train[feature_cols], train[TARGET]
 X_val, y_val = val[feature_cols], val[TARGET]
 
-model = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=63, random_state=42, n_jobs=-1, verbose=-1)
+neg_count = (y_train == 0).sum()
+pos_count = (y_train == 1).sum()
+scale = neg_count / pos_count
+
+model = lgb.LGBMClassifier(
+    n_estimators=1000,
+    learning_rate=0.05,
+    num_leaves=127,
+    scale_pos_weight=scale,
+    min_child_samples=50,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    random_state=42,
+    n_jobs=-1,
+    verbose=-1,
+)
 model.fit(X_train, y_train)
 probs = model.predict_proba(X_val)[:, 1]
 
@@ -32,5 +47,5 @@ print_results(score)
 with mlflow.start_run():
     mlflow.log_metric("val_1-auc_roc", score)
     mlflow.log_param("model", "LGBMClassifier")
-    mlflow.log_param("description", "lightgbm 500 trees lr=0.05")
+    mlflow.log_param("description", "lgbm 1000 trees, scale_pos_weight, more leaves")
     mlflow.log_param("status", "keep")
