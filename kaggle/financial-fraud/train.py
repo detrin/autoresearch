@@ -1,4 +1,5 @@
 import mlflow
+import numpy as np
 import lightgbm as lgb
 from sklearn.preprocessing import LabelEncoder
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
@@ -7,6 +8,22 @@ mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 mlflow.set_experiment(MLFLOW_EXPERIMENT)
 
 train, val = load_data()
+
+train["amount_fee_ratio"] = train["transaction_amount"] / (train["fee_amount"] + 1e-6)
+val["amount_fee_ratio"] = val["transaction_amount"] / (val["fee_amount"] + 1e-6)
+
+train["log_amount"] = np.log1p(train["transaction_amount"])
+val["log_amount"] = np.log1p(val["transaction_amount"])
+
+train["log_fee"] = np.log1p(train["fee_amount"])
+val["log_fee"] = np.log1p(val["fee_amount"])
+
+train["amount_x_fee"] = train["transaction_amount"] * train["fee_amount"]
+val["amount_x_fee"] = val["transaction_amount"] * val["fee_amount"]
+
+user_freq = train["user_id"].value_counts().to_dict()
+train["user_tx_count"] = train["user_id"].map(user_freq)
+val["user_tx_count"] = val["user_id"].map(user_freq).fillna(0)
 
 drop_cols = [TARGET, "transaction_id", "user_id", "organization", "transaction_timestamp"]
 feature_cols = [c for c in train.columns if c not in drop_cols]
@@ -47,5 +64,5 @@ print_results(score)
 with mlflow.start_run():
     mlflow.log_metric("val_1-auc_roc", score)
     mlflow.log_param("model", "LGBMClassifier")
-    mlflow.log_param("description", "lgbm 1000 trees, scale_pos_weight, more leaves")
+    mlflow.log_param("description", "lgbm + feature eng: amount/fee ratio, log amounts, user freq")
     mlflow.log_param("status", "keep")
