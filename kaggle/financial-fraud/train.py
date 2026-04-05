@@ -2,7 +2,7 @@ import mlflow
 import numpy as np
 import lightgbm as lgb
 from sklearn.preprocessing import LabelEncoder
-from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, GradientBoostingClassifier
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
 
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -27,11 +27,12 @@ X_val, y_val = val[feature_cols], val[TARGET]
 lgbm1 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=63, random_state=42, n_jobs=-1, verbose=-1)
 lgbm2 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=127, min_child_samples=50, subsample=0.8, colsample_bytree=0.8, random_state=43, n_jobs=-1, verbose=-1)
 lgbm3 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.1, num_leaves=31, random_state=44, n_jobs=-1, verbose=-1)
+lgbm4 = lgb.LGBMClassifier(n_estimators=800, learning_rate=0.03, num_leaves=255, min_child_samples=20, subsample=0.7, colsample_bytree=0.6, random_state=45, n_jobs=-1, verbose=-1)
 rf = RandomForestClassifier(n_estimators=300, n_jobs=-1, random_state=42)
 et = ExtraTreesClassifier(n_estimators=300, n_jobs=-1, random_state=42)
 
-models = [lgbm1, lgbm2, lgbm3, rf, et]
-weights = [0.25, 0.25, 0.15, 0.2, 0.15]
+models = [lgbm1, lgbm2, lgbm3, lgbm4, rf, et]
+weights = [0.2, 0.2, 0.1, 0.2, 0.15, 0.15]
 
 for m in models:
     m.fit(X_train, y_train)
@@ -44,6 +45,6 @@ print_results(score)
 
 with mlflow.start_run():
     mlflow.log_metric("val_1-auc_roc", score)
-    mlflow.log_param("model", "Ensemble(3xLGBM+RF+ET)")
-    mlflow.log_param("description", "5-model ensemble: 3 lgbm + rf + extra trees")
+    mlflow.log_param("model", "Ensemble(4xLGBM+RF+ET)")
+    mlflow.log_param("description", "6-model ensemble: 4 lgbm variants + rf + et")
     mlflow.log_param("status", "keep")
