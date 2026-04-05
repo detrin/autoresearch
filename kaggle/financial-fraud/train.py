@@ -1,5 +1,5 @@
 import mlflow
-from sklearn.ensemble import RandomForestClassifier
+import lightgbm as lgb
 from sklearn.preprocessing import LabelEncoder
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
 
@@ -22,7 +22,7 @@ for col in cat_cols:
 X_train, y_train = train[feature_cols], train[TARGET]
 X_val, y_val = val[feature_cols], val[TARGET]
 
-model = RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=42)
+model = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=63, random_state=42, n_jobs=-1, verbose=-1)
 model.fit(X_train, y_train)
 probs = model.predict_proba(X_val)[:, 1]
 
@@ -31,6 +31,6 @@ print_results(score)
 
 with mlflow.start_run():
     mlflow.log_metric("val_1-auc_roc", score)
-    mlflow.log_param("model", "RandomForestClassifier")
-    mlflow.log_param("description", "random forest 200 trees")
+    mlflow.log_param("model", "LGBMClassifier")
+    mlflow.log_param("description", "lightgbm 500 trees lr=0.05")
     mlflow.log_param("status", "keep")
