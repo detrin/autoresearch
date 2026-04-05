@@ -1,6 +1,6 @@
 # Autoresearch — Kaggle Benchmarks
 
-Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch).
+Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch). Repo: [detrin/autoresearch](https://github.com/detrin/autoresearch).
 Agent autonomously runs ML experiments in a loop. Human writes strategy, agent writes code.
 
 ## Architecture
