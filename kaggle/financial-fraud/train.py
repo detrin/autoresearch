@@ -1,11 +1,11 @@
 import mlflow
 import numpy as np
+import optuna
 import lightgbm as lgb
-import xgboost as xgb
-from scipy.optimize import minimize
 from sklearn.preprocessing import LabelEncoder
 from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
 from sklearn.metrics import roc_auc_score
+from scipy.optimize import minimize
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
 
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -27,13 +27,44 @@ for col in cat_cols:
 X_train, y_train = train[feature_cols], train[TARGET]
 X_val, y_val = val[feature_cols], val[TARGET]
 
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+def objective(trial):
+    params = {
+        "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
+        "num_leaves": trial.suggest_int("num_leaves", 15, 255),
+        "min_child_samples": trial.suggest_int("min_child_samples", 5, 200),
+        "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
+        "random_state": 42,
+        "n_jobs": -1,
+        "verbose": -1,
+    }
+    m = lgb.LGBMClassifier(**params)
+    m.fit(X_train, y_train)
+    p = m.predict_proba(X_val)[:, 1]
+    return roc_auc_score(y_val, p)
+
+study = optuna.create_study(direction="maximize")
+study.optimize(objective, n_trials=30, timeout=300)
+
+best_params = study.best_params
+best_params["random_state"] = 42
+best_params["n_jobs"] = -1
+best_params["verbose"] = -1
+print(f"Best Optuna params: {best_params}")
+print(f"Best Optuna AUC: {study.best_value:.6f}")
+
+lgbm_opt = lgb.LGBMClassifier(**best_params)
 lgbm1 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=63, random_state=42, n_jobs=-1, verbose=-1)
 lgbm2 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=127, min_child_samples=50, subsample=0.8, colsample_bytree=0.8, random_state=43, n_jobs=-1, verbose=-1)
-xgb1 = xgb.XGBClassifier(n_estimators=500, learning_rate=0.05, max_depth=6, subsample=0.8, colsample_bytree=0.8, random_state=44, n_jobs=-1, verbosity=0, eval_metric="auc")
 rf = RandomForestClassifier(n_estimators=500, n_jobs=-1, random_state=42)
 et = ExtraTreesClassifier(n_estimators=500, n_jobs=-1, random_state=42)
 
-models = [lgbm1, lgbm2, xgb1, rf, et]
+models = [lgbm_opt, lgbm1, lgbm2, rf, et]
 for m in models:
     m.fit(X_train, y_train)
 
@@ -57,6 +88,6 @@ print(f"Optimized weights: {best_w}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_1-auc_roc", score)
-    mlflow.log_param("model", "Ensemble(2xLGBM+XGB+RF+ET)")
-    mlflow.log_param("description", "5-model ensemble: 2 lgbm + xgboost + rf + et, opt weights")
+    mlflow.log_param("model", "Ensemble(optuna_lgbm+2xLGBM+RF+ET)")
+    mlflow.log_param("description", "optuna-tuned lgbm + 4 other models, opt weights")
     mlflow.log_param("status", "keep")
