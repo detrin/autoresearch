@@ -141,4 +141,49 @@ Only after the experiment loop produces a strong result:
 1. Find best run in MLflow, note the commit hash
 2. Cherry-pick or extract best `train.py` from that branch
 3. Create a clean Kaggle notebook combining `prepare.py` + `train.py`
-4. Submit to Kaggle
+4. Execute notebook locally with `jupyter nbconvert --execute` to verify it runs clean
+5. Push to Kaggle with `kaggle kernels push`
+6. Check status with `kaggle kernels status <user>/<kernel-slug>` — must show `COMPLETE`
+
+### Kaggle Data Paths
+
+On Kaggle, datasets are mounted at `/kaggle/input/<dataset-slug>/`. Notebooks must handle both local and Kaggle paths:
+
+```python
+import os
+
+DATA_FILE = "my_dataset.csv"
+if os.path.exists(f"/kaggle/input/<dataset-slug>/{DATA_FILE}"):
+    DATA_PATH = f"/kaggle/input/<dataset-slug>/{DATA_FILE}"
+else:
+    DATA_PATH = DATA_FILE
+```
+
+### Kaggle Kernel Metadata
+
+Each project needs a `kernel-metadata.json` for pushing:
+
+```json
+{
+  "id": "<kaggle-user>/<kernel-slug>",
+  "title": "<Kernel Title>",
+  "code_file": "notebook_executed.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": false,
+  "enable_internet": true,
+  "dataset_sources": ["<owner>/<dataset-slug>"],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}
+```
+
+## Tooling Tradeoffs
+
+- **Use Python 3.12+.** Python 3.9 on macOS causes SSL warnings, async issues, and jupyter timeout bugs. Kaggle runs 3.12.
+- **MLflow must use port 5050.** Port 5000 conflicts with macOS Control Center.
+- Large CSVs must be excluded from git history, not just `.gitignore` — `git filter-branch` needed after the fact.
+- Optuna searches don't belong in published notebooks — bake the best params in directly. The search is the research; the notebook is the report.
+- Use `glob.glob("/kaggle/input/**/<file>", recursive=True)` for robust Kaggle path detection.
