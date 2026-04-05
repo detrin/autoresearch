@@ -1,6 +1,7 @@
 import mlflow
 import numpy as np
 import lightgbm as lgb
+import xgboost as xgb
 from catboost import CatBoostClassifier
 from scipy.optimize import minimize
 from sklearn.preprocessing import LabelEncoder
@@ -17,7 +18,6 @@ drop_cols = [TARGET, "transaction_id", "user_id", "organization", "transaction_t
 feature_cols = [c for c in train.columns if c not in drop_cols]
 
 cat_cols = train[feature_cols].select_dtypes(include="object").columns.tolist()
-
 cat_indices = [feature_cols.index(c) for c in cat_cols]
 
 encoders = {}
@@ -40,23 +40,26 @@ for col in cat_cols:
 
 lgbm1 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=63, random_state=42, n_jobs=-1, verbose=-1)
 lgbm2 = lgb.LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=127, min_child_samples=50, subsample=0.8, colsample_bytree=0.8, random_state=43, n_jobs=-1, verbose=-1)
-cb = CatBoostClassifier(iterations=500, learning_rate=0.05, depth=8, random_seed=44, verbose=0, cat_features=cat_indices)
+xgb1 = xgb.XGBClassifier(n_estimators=500, learning_rate=0.05, max_depth=8, subsample=0.8, colsample_bytree=0.8, random_state=44, n_jobs=-1, verbosity=0)
+cb1 = CatBoostClassifier(iterations=500, learning_rate=0.05, depth=8, random_seed=44, verbose=0, cat_features=cat_indices)
+cb2 = CatBoostClassifier(iterations=500, learning_rate=0.1, depth=6, random_seed=45, verbose=0, cat_features=cat_indices, l2_leaf_reg=3)
 rf = RandomForestClassifier(n_estimators=500, n_jobs=-1, random_state=42)
 et = ExtraTreesClassifier(n_estimators=500, n_jobs=-1, random_state=42)
 
 lgbm1.fit(X_train_enc, y_train)
 lgbm2.fit(X_train_enc, y_train)
-cb.fit(X_train_cat, y_train)
+xgb1.fit(X_train_enc, y_train)
+cb1.fit(X_train_cat, y_train)
+cb2.fit(X_train_cat, y_train)
 rf.fit(X_train_enc, y_train)
 et.fit(X_train_enc, y_train)
 
-p_lgbm1 = lgbm1.predict_proba(X_val_enc)[:, 1]
-p_lgbm2 = lgbm2.predict_proba(X_val_enc)[:, 1]
-p_cb = cb.predict_proba(X_val_cat)[:, 1]
-p_rf = rf.predict_proba(X_val_enc)[:, 1]
-p_et = et.predict_proba(X_val_enc)[:, 1]
+models_enc = [lgbm1, lgbm2, xgb1, rf, et]
+models_cat = [cb1, cb2]
 
-preds = np.array([p_lgbm1, p_lgbm2, p_cb, p_rf, p_et])
+preds_list = [m.predict_proba(X_val_enc)[:, 1] for m in models_enc]
+preds_list += [m.predict_proba(X_val_cat)[:, 1] for m in models_cat]
+preds = np.array(preds_list)
 
 def neg_auc(w):
     w = np.abs(w)
@@ -64,7 +67,8 @@ def neg_auc(w):
     blend = (w[:, None] * preds).sum(axis=0)
     return -roc_auc_score(y_val, blend)
 
-res = minimize(neg_auc, x0=np.ones(5) / 5, method="Nelder-Mead")
+n = len(preds)
+res = minimize(neg_auc, x0=np.ones(n) / n, method="Nelder-Mead")
 best_w = np.abs(res.x)
 best_w = best_w / best_w.sum()
 
@@ -76,6 +80,6 @@ print(f"Optimized weights: {best_w}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_1-auc_roc", score)
-    mlflow.log_param("model", "Ensemble(2xLGBM+CatBoost+RF+ET)")
-    mlflow.log_param("description", "5-model ensemble with catboost, opt weights")
+    mlflow.log_param("model", "Ensemble(2xLGBM+XGB+2xCB+RF+ET)")
+    mlflow.log_param("description", "7-model ensemble: 2lgbm+xgb+2catboost+rf+et opt weights")
     mlflow.log_param("status", "keep")
