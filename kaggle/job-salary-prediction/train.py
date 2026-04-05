@@ -20,12 +20,15 @@ X_val, y_val = val.drop(columns=[TARGET]), val[TARGET]
 cat_indices = [X_train.columns.tolist().index(c) for c in cat_cols]
 
 model = lgb.LGBMRegressor(
-    n_estimators=1000,
-    learning_rate=0.05,
-    max_depth=8,
-    num_leaves=63,
+    n_estimators=3000,
+    learning_rate=0.02,
+    max_depth=10,
+    num_leaves=127,
     subsample=0.8,
     colsample_bytree=0.8,
+    min_child_samples=20,
+    reg_alpha=0.1,
+    reg_lambda=0.1,
     random_state=42,
     n_jobs=-1,
     verbose=-1,
@@ -39,5 +42,5 @@ print_results(score)
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
     mlflow.log_param("model", "LGBMRegressor")
-    mlflow.log_param("description", "LGBM 1000 iter lr=0.05 depth=8 leaves=63")
-    mlflow.log_param("status", "keep")
+    mlflow.log_param("description", "LGBM 3000 iter lr=0.02 depth=10 leaves=127 reg")
+    mlflow.log_param("status", "discard")
