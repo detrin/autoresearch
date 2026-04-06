@@ -7,7 +7,7 @@
   "is_private": false,
   "enable_gpu": false,
   "enable_internet": true,
-  "dataset_sources": ["yashkhare2004/students-mental-health-and-academic-performance"],
+  "dataset_sources": ["sharmajicoder/student-mental-health-and-burnout"],
   "competition_sources": [],
   "kernel_sources": [],
   "model_sources": []
