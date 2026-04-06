@@ -1,1 +1,10 @@
 commit	val_score	status	description
+379d83e	0.010263	keep	LightGBM baseline: 500 trees, lr=0.05, 63 leaves
+f0fed20	0.008587	keep	LightGBM: keep IDs, 1000 trees, 127 leaves, subsample
+a941d7e	0.002392	keep	LightGBM: +calendar feats, +margin/cost feats, 2000 trees
+d2df3cc	0.002168	keep	LightGBM: +interaction feats, 2000 trees, 255 leaves, lr=0.05
+eddd0b8	0.002213	keep	LightGBM: +target encoding IDs/cats, +store/product stats
+79f33ed	0.001600	keep	LightGBM: 255 leaves, +margin_per_unit/weight, discount_flag
+847a10b	0.001305	keep	LGB+XGB ensemble 0.6/0.4 (lgb=0.001600, xgb=0.002155)
+90a5eaa	0.001254	keep	LGB+XGB+CB ensemble w=0.60/0.30/0.10
+88d986e	-	crash	4-model ensemble timeout
