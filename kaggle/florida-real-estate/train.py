@@ -1,5 +1,7 @@
+import os
 import mlflow
 import numpy as np
+import pandas as pd
 import optuna
 import lightgbm as lgb
 import xgboost as xgb
@@ -12,8 +14,42 @@ mlflow.set_experiment(MLFLOW_EXPERIMENT)
 
 train, val = load_data()
 
+DATA_PATH = os.path.join(os.path.dirname(__file__), "florida_real_estate_sold_properties_ultimate.csv")
+raw = pd.read_csv(DATA_PATH)
+raw["_row_id"] = range(len(raw))
+
+LUXURY_WORDS = ["pool", "waterfront", "ocean", "beach", "golf", "gated", "luxury",
+                "marble", "granite", "custom", "upgraded", "renovated", "remodeled",
+                "resort", "spa", "wine", "elevator", "penthouse", "panoramic",
+                "spectacular", "stunning", "breathtaking", "pristine", "immaculate"]
+
+raw["text_lower"] = raw["sanitized_text"].fillna("").str.lower()
+raw["text_word_count"] = raw["text_lower"].str.split().str.len().fillna(0)
+raw["text_char_count"] = raw["text_lower"].str.len().fillna(0)
+raw["text_luxury_count"] = raw["text_lower"].apply(lambda t: sum(1 for w in LUXURY_WORDS if w in t))
+raw["text_has_pool"] = raw["text_lower"].str.contains("pool", na=False).astype(int)
+raw["text_has_waterfront"] = raw["text_lower"].str.contains("waterfront|ocean view|water view|bay view", na=False).astype(int)
+raw["text_has_garage"] = raw["text_lower"].str.contains("garage", na=False).astype(int)
+raw["text_has_new_construction"] = raw["text_lower"].str.contains("new construction|under construction|newly built", na=False).astype(int)
+raw["text_has_investment"] = raw["text_lower"].str.contains("investment|rental|income", na=False).astype(int)
+raw["text_bed_mention"] = raw["text_lower"].str.count(r"\d+[\s-]?bed")
+raw["text_bath_mention"] = raw["text_lower"].str.count(r"\d+[\s-]?bath")
+
+text_cols = ["text_word_count", "text_char_count", "text_luxury_count", "text_has_pool",
+             "text_has_waterfront", "text_has_garage", "text_has_new_construction",
+             "text_has_investment", "text_bed_mention", "text_bath_mention"]
+
+from sklearn.model_selection import train_test_split
+raw_train, raw_val = train_test_split(raw, test_size=0.2, random_state=42)
+
+train = train.reset_index(drop=True)
+val = val.reset_index(drop=True)
+for col in text_cols:
+    train[col] = raw_train[col].values
+    val[col] = raw_val[col].values
+
 drop_cols = [TARGET, "listPrice"]
-feature_cols = [c for c in train.columns if c not in drop_cols]
+feature_cols = [c for c in train.columns if c not in drop_cols and c not in text_cols]
 
 for df in [train, val]:
     df["property_age"] = 2026 - df["year_built"]
@@ -88,7 +124,7 @@ extra_cols = ["property_age", "sqft_per_bed", "sqft_per_bath", "total_rooms", "b
               "log_zip_te_smooth", "zip_sqft_mean", "zip_beds_mean", "zip_age_mean",
               "sqft_vs_zip_avg", "beds_vs_zip_avg", "age_vs_zip_avg", "price_per_sqft_est",
               "type_te_smooth", "type_te_count", "type_te_std", "type_te_median",
-              "type_sqft_mean", "sqft_vs_type_avg", "log_type_te_smooth"]
+              "type_sqft_mean", "sqft_vs_type_avg", "log_type_te_smooth"] + text_cols
 feature_cols = feature_cols + extra_cols
 
 cat_cols = train[feature_cols].select_dtypes(include="object").columns.tolist()
@@ -133,8 +169,7 @@ best_lgb.update({"n_estimators": 3000, "random_state": 42, "verbosity": -1})
 model_lgb = lgb.LGBMRegressor(**best_lgb)
 model_lgb.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)],
               callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
-preds_lgb_log = model_lgb.predict(X_val)
-preds_lgb = np.expm1(preds_lgb_log)
+preds_lgb = np.expm1(model_lgb.predict(X_val))
 
 def objective_xgb(trial):
     params = {
@@ -160,8 +195,7 @@ best_xgb = study_xgb.best_params
 best_xgb.update({"n_estimators": 3000, "random_state": 42, "verbosity": 0, "tree_method": "hist"})
 model_xgb = xgb.XGBRegressor(**best_xgb, early_stopping_rounds=100)
 model_xgb.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)], verbose=False)
-preds_xgb_log = model_xgb.predict(X_val)
-preds_xgb = np.expm1(preds_xgb_log)
+preds_xgb = np.expm1(model_xgb.predict(X_val))
 
 def objective_cb(trial):
     params = {
@@ -184,51 +218,30 @@ best_cb = study_cb.best_params
 best_cb.update({"iterations": 3000, "random_seed": 42, "verbose": 0})
 model_cb = CatBoostRegressor(**best_cb)
 model_cb.fit(X_train, y_train_log, eval_set=(X_val, y_val_log), early_stopping_rounds=100)
-preds_cb_log = model_cb.predict(X_val)
-preds_cb = np.expm1(preds_cb_log)
+preds_cb = np.expm1(model_cb.predict(X_val))
 
-def objective_blend_orig(trial):
+def objective_blend(trial):
     w1 = trial.suggest_float("lgb_w", 0.0, 1.0)
     w2 = trial.suggest_float("xgb_w", 0.0, 1.0 - w1)
     w3 = 1.0 - w1 - w2
     blend = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
     return evaluate(y_val, blend)
 
-study_orig = optuna.create_study(direction="minimize")
-study_orig.optimize(objective_blend_orig, n_trials=300)
+study_blend = optuna.create_study(direction="minimize")
+study_blend.optimize(objective_blend, n_trials=300)
+w1 = study_blend.best_params["lgb_w"]
+w2 = study_blend.best_params["xgb_w"]
+w3 = 1.0 - w1 - w2
 
-def objective_blend_log(trial):
-    w1 = trial.suggest_float("lgb_w", 0.0, 1.0)
-    w2 = trial.suggest_float("xgb_w", 0.0, 1.0 - w1)
-    w3 = 1.0 - w1 - w2
-    blend_log = w1 * preds_lgb_log + w2 * preds_xgb_log + w3 * preds_cb_log
-    return evaluate(y_val, np.expm1(blend_log))
-
-study_log = optuna.create_study(direction="minimize")
-study_log.optimize(objective_blend_log, n_trials=300)
-
-if study_log.best_value < study_orig.best_value:
-    w1 = study_log.best_params["lgb_w"]
-    w2 = study_log.best_params["xgb_w"]
-    w3 = 1.0 - w1 - w2
-    preds = np.expm1(w1 * preds_lgb_log + w2 * preds_xgb_log + w3 * preds_cb_log)
-    blend_mode = "log"
-else:
-    w1 = study_orig.best_params["lgb_w"]
-    w2 = study_orig.best_params["xgb_w"]
-    w3 = 1.0 - w1 - w2
-    preds = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
-    blend_mode = "orig"
-
+preds = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
 score = evaluate(y_val, preds)
 print_results(score)
 
-desc = (f"{blend_mode}-blend w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
-        f"lgb={study_lgb.best_value:.0f} xgb={study_xgb.best_value:.0f} cb={study_cb.best_value:.0f}, "
-        f"orig={study_orig.best_value:.0f} log={study_log.best_value:.0f}")
+desc = (f"text-feats 3-ens w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
+        f"lgb={study_lgb.best_value:.0f} xgb={study_xgb.best_value:.0f} cb={study_cb.best_value:.0f}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LGB+XGB+CB-dual-blend")
+    mlflow.log_param("model", "LGB+XGB+CB-text-feats")
     mlflow.log_param("description", desc[:250])
     mlflow.log_param("status", "keep")
