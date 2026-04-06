@@ -28,3 +28,5 @@ dc47d0a	343783.604511	discard	decade_built te + is_condo/single_family
 9aed0f8	378400.035288	discard	30-model avg with baked params (no optuna, suboptimal)
 87b5791	344775.097038	discard	optuna+5seed avg (fewer trials, not better)
 1ee882c	344674.392181	discard	sample weight search (not better)
+7a4550f	345822.460004	discard	dual blend log vs orig (not better)
+80fdce3	340478.075791	keep	text features from sanitized_text (luxury, pool, waterfront)
