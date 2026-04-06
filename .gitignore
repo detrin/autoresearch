@@ -7,3 +7,5 @@ results.tsv
 __pycache__/
 *.pyc
 kaggle/**/*.csv
+.deadline
+catboost_info/

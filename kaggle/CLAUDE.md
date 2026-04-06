@@ -88,10 +88,48 @@ Every experiment run MUST log:
 
 Timestamp is recorded automatically by MLflow (`start_time`, `end_time`). This lets us track optimization velocity — how quickly score improves over wall-clock time.
 
+## Session Deadline
+
+Every experiment session has a **hard deadline** enforced by `kaggle/deadline.py`. The human sets it before launching the agent.
+
+### How it works
+
+1. **Human sets deadline before agent launch:**
+   ```bash
+   python kaggle/deadline.py set 90   # 90-minute session
+   ```
+
+2. **Agent checks before EVERY experiment:**
+   ```bash
+   python kaggle/deadline.py check    # exit code 0 = keep going, 1 = stop
+   ```
+   Or from Python inside the experiment loop:
+   ```python
+   import sys; sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+   from deadline import check_deadline, minutes_remaining
+   if not check_deadline():
+       # stop loop, summarize results, exit
+   ```
+
+3. **Agent MUST stop when deadline is reached.** No "one more experiment." Log final results, summarize what worked, and exit cleanly.
+
+4. **Human cleans up after:**
+   ```bash
+   python kaggle/deadline.py clear
+   ```
+
+### Per-run timeout
+
+Individual `python train.py` runs still have a 10-minute timeout. Use the Bash tool's `timeout` parameter or shell `timeout 600`:
+```bash
+timeout 600 python train.py > run.log 2>&1
+```
+
 ## Critical Rules
 
-- **NEVER STOP.** Do not pause to ask the human. Run indefinitely until interrupted.
-- **Timeout:** If a run exceeds 10 minutes, kill it and treat as crash.
+- **NEVER STOP** unless deadline is reached. Do not pause to ask the human. Run until deadline.
+- **CHECK DEADLINE** before every experiment iteration. If `check_deadline()` returns False, stop immediately.
+- **Per-run timeout:** If a single run exceeds 10 minutes, kill it and treat as crash.
 - **Simplicity wins.** Equal score + simpler code = improvement.
 - **Only modify `train.py`.** Never touch `prepare.py`.
 - **One idea per experiment.** Atomic changes make results interpretable.
