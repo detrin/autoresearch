@@ -105,10 +105,13 @@ y_train_log = np.log1p(train[TARGET])
 y_val = val[TARGET]
 y_val_log = np.log1p(y_val)
 
+sample_weights = np.sqrt(train[TARGET].values / train[TARGET].median())
+sample_weights = np.clip(sample_weights, 0.1, 10.0)
+
 optuna.logging.set_verbosity(optuna.logging.WARNING)
-SEEDS = [42, 123, 777, 2024, 31337]
 
 def objective_lgb(trial):
+    use_weights = trial.suggest_categorical("use_weights", [True, False])
     params = {
         "n_estimators": 3000,
         "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.15, log=True),
@@ -123,22 +126,21 @@ def objective_lgb(trial):
         "verbosity": -1,
     }
     m = lgb.LGBMRegressor(**params)
-    m.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)],
+    sw = sample_weights if use_weights else None
+    m.fit(X_train, y_train_log, sample_weight=sw, eval_set=[(X_val, y_val_log)],
           callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
     return evaluate(y_val, np.expm1(m.predict(X_val)))
 
 study_lgb = optuna.create_study(direction="minimize")
-study_lgb.optimize(objective_lgb, n_trials=80, timeout=150)
+study_lgb.optimize(objective_lgb, n_trials=120, timeout=300)
 best_lgb = study_lgb.best_params
-best_lgb.update({"n_estimators": 3000, "verbosity": -1})
-preds_lgb_seeds = []
-for s in SEEDS:
-    best_lgb["random_state"] = s
-    m = lgb.LGBMRegressor(**best_lgb)
-    m.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)],
-          callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
-    preds_lgb_seeds.append(m.predict(X_val))
-preds_lgb_log = np.mean(preds_lgb_seeds, axis=0)
+use_w_lgb = best_lgb.pop("use_weights")
+best_lgb.update({"n_estimators": 3000, "random_state": 42, "verbosity": -1})
+model_lgb = lgb.LGBMRegressor(**best_lgb)
+model_lgb.fit(X_train, y_train_log, sample_weight=sample_weights if use_w_lgb else None,
+              eval_set=[(X_val, y_val_log)],
+              callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
+preds_lgb = np.expm1(model_lgb.predict(X_val))
 
 def objective_xgb(trial):
     params = {
@@ -159,16 +161,12 @@ def objective_xgb(trial):
     return evaluate(y_val, np.expm1(m.predict(X_val)))
 
 study_xgb = optuna.create_study(direction="minimize")
-study_xgb.optimize(objective_xgb, n_trials=60, timeout=120)
+study_xgb.optimize(objective_xgb, n_trials=80, timeout=240)
 best_xgb = study_xgb.best_params
-best_xgb.update({"n_estimators": 3000, "verbosity": 0, "tree_method": "hist"})
-preds_xgb_seeds = []
-for s in SEEDS:
-    best_xgb["random_state"] = s
-    m = xgb.XGBRegressor(**best_xgb, early_stopping_rounds=100)
-    m.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)], verbose=False)
-    preds_xgb_seeds.append(m.predict(X_val))
-preds_xgb_log = np.mean(preds_xgb_seeds, axis=0)
+best_xgb.update({"n_estimators": 3000, "random_state": 42, "verbosity": 0, "tree_method": "hist"})
+model_xgb = xgb.XGBRegressor(**best_xgb, early_stopping_rounds=100)
+model_xgb.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)], verbose=False)
+preds_xgb = np.expm1(model_xgb.predict(X_val))
 
 def objective_cb(trial):
     params = {
@@ -186,20 +184,12 @@ def objective_cb(trial):
     return evaluate(y_val, np.expm1(m.predict(X_val)))
 
 study_cb = optuna.create_study(direction="minimize")
-study_cb.optimize(objective_cb, n_trials=40, timeout=120)
+study_cb.optimize(objective_cb, n_trials=50, timeout=240)
 best_cb = study_cb.best_params
-best_cb.update({"iterations": 3000, "verbose": 0})
-preds_cb_seeds = []
-for s in SEEDS:
-    best_cb["random_seed"] = s
-    m = CatBoostRegressor(**best_cb)
-    m.fit(X_train, y_train_log, eval_set=(X_val, y_val_log), early_stopping_rounds=100)
-    preds_cb_seeds.append(m.predict(X_val))
-preds_cb_log = np.mean(preds_cb_seeds, axis=0)
-
-preds_lgb = np.expm1(preds_lgb_log)
-preds_xgb = np.expm1(preds_xgb_log)
-preds_cb = np.expm1(preds_cb_log)
+best_cb.update({"iterations": 3000, "random_seed": 42, "verbose": 0})
+model_cb = CatBoostRegressor(**best_cb)
+model_cb.fit(X_train, y_train_log, eval_set=(X_val, y_val_log), early_stopping_rounds=100)
+preds_cb = np.expm1(model_cb.predict(X_val))
 
 def objective_blend(trial):
     w1 = trial.suggest_float("lgb_w", 0.0, 1.0)
@@ -209,7 +199,7 @@ def objective_blend(trial):
     return evaluate(y_val, blend)
 
 study_blend = optuna.create_study(direction="minimize")
-study_blend.optimize(objective_blend, n_trials=500)
+study_blend.optimize(objective_blend, n_trials=300)
 w1 = study_blend.best_params["lgb_w"]
 w2 = study_blend.best_params["xgb_w"]
 w3 = 1.0 - w1 - w2
@@ -218,11 +208,11 @@ preds = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
 score = evaluate(y_val, preds)
 print_results(score)
 
-desc = (f"optuna+5seed-avg 3-ens w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
+desc = (f"sample_weight_search w={w1:.2f}/{w2:.2f}/{w3:.2f}, use_w_lgb={use_w_lgb}, "
         f"lgb={study_lgb.best_value:.0f} xgb={study_xgb.best_value:.0f} cb={study_cb.best_value:.0f}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LGB+XGB+CB-optuna-5seed")
+    mlflow.log_param("model", "LGB+XGB+CB-sample-weights")
     mlflow.log_param("description", desc[:250])
     mlflow.log_param("status", "keep")
