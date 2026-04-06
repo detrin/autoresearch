@@ -106,12 +106,14 @@ Every experiment run MUST log:
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `val_score` | metric | Primary evaluation metric |
+| `val_score` | metric | **Always `val_score`** — never use the project-specific name from `prepare.py` (e.g. `val_1-f1`, `val_rmse`). Using the project name creates a split column in MLflow where runs can't be compared. |
 | `commit` | param | Short git hash |
 | `description` | param | One-line description of the change |
 | `status` | param | `keep` / `discard` / `crash` |
 | `project` | tag | Which dataset/project |
 | `branch` | tag | Git branch name |
+
+**Critical:** `prepare.py` defines a project-specific `METRIC_NAME` (e.g. `"1-f1"`) and `print_results` prints `val_1-f1`. Ignore this name when logging to MLflow — always use `"val_score"` as the metric key. This keeps all experiments across all projects comparable in a single column.
 
 Timestamp is recorded automatically by MLflow (`start_time`, `end_time`). This lets us track optimization velocity — how quickly score improves over wall-clock time.
 

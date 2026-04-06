@@ -1,0 +1,14 @@
+{
+  "id": "jetakow/student-mental-health-risk-prediction-autoresearch",
+  "title": "Student Mental Health Risk Prediction Autoresearch",
+  "code_file": "notebook_executed.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": false,
+  "enable_internet": true,
+  "dataset_sources": ["yashkhare2004/students-mental-health-and-academic-performance"],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}
