@@ -38,7 +38,7 @@ for col in cat_cols:
 X_train, y_train = train[feature_cols], train[TARGET]
 X_val, y_val = val[feature_cols], val[TARGET]
 
-model = lgb.LGBMRegressor(n_estimators=4000, learning_rate=0.03, num_leaves=255, random_state=42, n_jobs=-1,
+model = lgb.LGBMRegressor(n_estimators=2000, learning_rate=0.05, num_leaves=255, random_state=42, n_jobs=-1,
                            min_child_samples=30, subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=0.1)
 model.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(100), lgb.log_evaluation(500)])
 preds = model.predict(X_val)
@@ -47,7 +47,7 @@ score = evaluate(y_val, preds)
 print_results(score)
 
 commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode().strip()
-description = "LightGBM: +interaction feats, 4000 trees, lr=0.03, 255 leaves"
+description = "LightGBM: +interaction feats, 2000 trees, 255 leaves, lr=0.05"
 
 with mlflow.start_run():
     mlflow.log_metric("val_mape", score)
