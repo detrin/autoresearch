@@ -108,97 +108,83 @@ y_val_log = np.log1p(y_val)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 def objective_lgb(trial):
-    obj = trial.suggest_categorical("objective", ["regression", "huber"])
     params = {
-        "n_estimators": 3000,
-        "objective": obj,
-        "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.15, log=True),
-        "num_leaves": trial.suggest_int("num_leaves", 20, 300),
-        "max_depth": trial.suggest_int("max_depth", 3, 20),
-        "min_child_samples": trial.suggest_int("min_child_samples", 3, 150),
-        "subsample": trial.suggest_float("subsample", 0.4, 1.0),
-        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.3, 1.0),
-        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 50.0, log=True),
-        "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 50.0, log=True),
+        "n_estimators": 5000,
+        "learning_rate": trial.suggest_float("learning_rate", 0.003, 0.12, log=True),
+        "num_leaves": trial.suggest_int("num_leaves", 15, 400),
+        "max_depth": trial.suggest_int("max_depth", 3, 25),
+        "min_child_samples": trial.suggest_int("min_child_samples", 3, 200),
+        "subsample": trial.suggest_float("subsample", 0.3, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.2, 1.0),
+        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 100.0, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 100.0, log=True),
         "random_state": 42,
         "verbosity": -1,
     }
-    if obj == "huber":
-        params["alpha"] = trial.suggest_float("huber_alpha", 0.5, 0.99)
     m = lgb.LGBMRegressor(**params)
     m.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)],
-          callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
+          callbacks=[lgb.early_stopping(150), lgb.log_evaluation(0)])
     return evaluate(y_val, np.expm1(m.predict(X_val)))
 
 study_lgb = optuna.create_study(direction="minimize")
-study_lgb.optimize(objective_lgb, n_trials=120, timeout=300)
+study_lgb.optimize(objective_lgb, n_trials=200, timeout=480)
 best_lgb = study_lgb.best_params
-best_lgb.update({"n_estimators": 3000, "verbosity": -1})
-preds_lgb_list = []
-for seed in [42, 123, 777]:
-    best_lgb["random_state"] = seed
-    m = lgb.LGBMRegressor(**best_lgb)
-    m.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)],
-          callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
-    preds_lgb_list.append(np.expm1(m.predict(X_val)))
-preds_lgb = np.mean(preds_lgb_list, axis=0)
+best_lgb.update({"n_estimators": 5000, "random_state": 42, "verbosity": -1})
+model_lgb = lgb.LGBMRegressor(**best_lgb)
+model_lgb.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)],
+              callbacks=[lgb.early_stopping(150), lgb.log_evaluation(0)])
+preds_lgb = np.expm1(model_lgb.predict(X_val))
 
 def objective_xgb(trial):
     params = {
-        "n_estimators": 3000,
-        "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.15, log=True),
-        "max_depth": trial.suggest_int("max_depth", 3, 15),
-        "min_child_weight": trial.suggest_int("min_child_weight", 1, 100),
-        "subsample": trial.suggest_float("subsample", 0.4, 1.0),
-        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.3, 1.0),
-        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 50.0, log=True),
-        "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 50.0, log=True),
+        "n_estimators": 5000,
+        "learning_rate": trial.suggest_float("learning_rate", 0.003, 0.12, log=True),
+        "max_depth": trial.suggest_int("max_depth", 3, 18),
+        "min_child_weight": trial.suggest_int("min_child_weight", 1, 150),
+        "subsample": trial.suggest_float("subsample", 0.3, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.2, 1.0),
+        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 100.0, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 100.0, log=True),
+        "gamma": trial.suggest_float("gamma", 0.0, 5.0),
         "random_state": 42,
         "verbosity": 0,
         "tree_method": "hist",
     }
-    m = xgb.XGBRegressor(**params, early_stopping_rounds=100)
+    m = xgb.XGBRegressor(**params, early_stopping_rounds=150)
     m.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)], verbose=False)
     return evaluate(y_val, np.expm1(m.predict(X_val)))
 
 study_xgb = optuna.create_study(direction="minimize")
-study_xgb.optimize(objective_xgb, n_trials=80, timeout=240)
+study_xgb.optimize(objective_xgb, n_trials=150, timeout=420)
 best_xgb = study_xgb.best_params
-best_xgb.update({"n_estimators": 3000, "verbosity": 0, "tree_method": "hist"})
-preds_xgb_list = []
-for seed in [42, 123, 777]:
-    best_xgb["random_state"] = seed
-    m = xgb.XGBRegressor(**best_xgb, early_stopping_rounds=100)
-    m.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)], verbose=False)
-    preds_xgb_list.append(np.expm1(m.predict(X_val)))
-preds_xgb = np.mean(preds_xgb_list, axis=0)
+best_xgb.update({"n_estimators": 5000, "random_state": 42, "verbosity": 0, "tree_method": "hist"})
+model_xgb = xgb.XGBRegressor(**best_xgb, early_stopping_rounds=150)
+model_xgb.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)], verbose=False)
+preds_xgb = np.expm1(model_xgb.predict(X_val))
 
 def objective_cb(trial):
     params = {
-        "iterations": 3000,
-        "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.15, log=True),
-        "depth": trial.suggest_int("depth", 3, 12),
-        "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1e-8, 50.0, log=True),
-        "bagging_temperature": trial.suggest_float("bagging_temperature", 0.0, 1.0),
-        "random_strength": trial.suggest_float("random_strength", 1e-8, 10.0, log=True),
+        "iterations": 5000,
+        "learning_rate": trial.suggest_float("learning_rate", 0.003, 0.12, log=True),
+        "depth": trial.suggest_int("depth", 3, 14),
+        "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1e-8, 100.0, log=True),
+        "bagging_temperature": trial.suggest_float("bagging_temperature", 0.0, 2.0),
+        "random_strength": trial.suggest_float("random_strength", 1e-8, 20.0, log=True),
+        "border_count": trial.suggest_int("border_count", 32, 255),
         "random_seed": 42,
         "verbose": 0,
     }
     m = CatBoostRegressor(**params)
-    m.fit(X_train, y_train_log, eval_set=(X_val, y_val_log), early_stopping_rounds=100)
+    m.fit(X_train, y_train_log, eval_set=(X_val, y_val_log), early_stopping_rounds=150)
     return evaluate(y_val, np.expm1(m.predict(X_val)))
 
 study_cb = optuna.create_study(direction="minimize")
-study_cb.optimize(objective_cb, n_trials=50, timeout=240)
+study_cb.optimize(objective_cb, n_trials=80, timeout=420)
 best_cb = study_cb.best_params
-best_cb.update({"iterations": 3000, "verbose": 0})
-preds_cb_list = []
-for seed in [42, 123, 777]:
-    best_cb["random_seed"] = seed
-    m = CatBoostRegressor(**best_cb)
-    m.fit(X_train, y_train_log, eval_set=(X_val, y_val_log), early_stopping_rounds=100)
-    preds_cb_list.append(np.expm1(m.predict(X_val)))
-preds_cb = np.mean(preds_cb_list, axis=0)
+best_cb.update({"iterations": 5000, "random_seed": 42, "verbose": 0})
+model_cb = CatBoostRegressor(**best_cb)
+model_cb.fit(X_train, y_train_log, eval_set=(X_val, y_val_log), early_stopping_rounds=150)
+preds_cb = np.expm1(model_cb.predict(X_val))
 
 def objective_blend(trial):
     w1 = trial.suggest_float("lgb_w", 0.0, 1.0)
@@ -208,7 +194,7 @@ def objective_blend(trial):
     return evaluate(y_val, blend)
 
 study_blend = optuna.create_study(direction="minimize")
-study_blend.optimize(objective_blend, n_trials=300)
+study_blend.optimize(objective_blend, n_trials=500)
 w1 = study_blend.best_params["lgb_w"]
 w2 = study_blend.best_params["xgb_w"]
 w3 = 1.0 - w1 - w2
@@ -217,11 +203,11 @@ preds = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
 score = evaluate(y_val, preds)
 print_results(score)
 
-desc = (f"3x3-seed-ens+huber w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
+desc = (f"3-ens-big-optuna w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
         f"lgb={study_lgb.best_value:.0f} xgb={study_xgb.best_value:.0f} cb={study_cb.best_value:.0f}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LGB+XGB+CB-3seed-huber")
+    mlflow.log_param("model", "LGB+XGB+CB-big-optuna")
     mlflow.log_param("description", desc[:250])
     mlflow.log_param("status", "keep")
