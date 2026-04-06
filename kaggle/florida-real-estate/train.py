@@ -12,6 +12,10 @@ mlflow.set_experiment(MLFLOW_EXPERIMENT)
 
 train, val = load_data()
 
+q99 = train[TARGET].quantile(0.99)
+q01 = train[TARGET].quantile(0.01)
+train = train[(train[TARGET] >= q01) & (train[TARGET] <= q99)].reset_index(drop=True)
+
 drop_cols = [TARGET, "listPrice"]
 feature_cols = [c for c in train.columns if c not in drop_cols]
 
@@ -23,8 +27,6 @@ for df in [train, val]:
     df["bed_bath_ratio"] = df["beds"] / df["baths"].replace(0, np.nan)
     df["log_sqft"] = np.log1p(df["sqft"])
     df["sqft_x_baths"] = df["sqft"] * df["baths"]
-    df["garage_x_sqft"] = df["garage"] * df["sqft"]
-    df["age_x_sqft"] = df["property_age"] * df["sqft"]
 
 global_mean = train[TARGET].mean()
 smoothing = 10
@@ -37,7 +39,6 @@ zip_stats = train.groupby("zip").agg(
     zip_sqft_mean=("sqft", "mean"),
     zip_beds_mean=("beds", "mean"),
     zip_age_mean=("property_age", "mean"),
-    zip_baths_mean=("baths", "mean"),
     zip_te_q25=(TARGET, lambda x: x.quantile(0.25)),
     zip_te_q75=(TARGET, lambda x: x.quantile(0.75)),
 ).reset_index()
@@ -75,40 +76,23 @@ for c in type_merge[1:]:
     fill = global_mean if any(k in c for k in ["smooth", "median"]) else 0
     val[c] = val[c].fillna(fill)
 
-zip_type_stats = train.groupby(["zip", "type"]).agg(
-    zt_te_mean=(TARGET, "mean"),
-    zt_te_count=(TARGET, "count"),
-).reset_index()
-zip_type_stats["zt_te_smooth"] = (
-    (zip_type_stats["zt_te_count"] * zip_type_stats["zt_te_mean"] + smoothing * global_mean)
-    / (zip_type_stats["zt_te_count"] + smoothing)
-)
-train = train.merge(zip_type_stats[["zip", "type", "zt_te_smooth", "zt_te_count"]], on=["zip", "type"], how="left")
-val = val.merge(zip_type_stats[["zip", "type", "zt_te_smooth", "zt_te_count"]], on=["zip", "type"], how="left")
-val["zt_te_smooth"] = val["zt_te_smooth"].fillna(global_mean)
-val["zt_te_count"] = val["zt_te_count"].fillna(0)
-
 for df in [train, val]:
     df["log_zip_te_smooth"] = np.log1p(df["zip_te_smooth"].clip(lower=0))
     df["sqft_vs_zip_avg"] = df["sqft"] / df["zip_sqft_mean"].replace(0, np.nan)
     df["beds_vs_zip_avg"] = df["beds"] / df["zip_beds_mean"].replace(0, np.nan)
     df["age_vs_zip_avg"] = df["property_age"] / df["zip_age_mean"].replace(0, np.nan)
-    df["baths_vs_zip_avg"] = df["baths"] / df["zip_baths_mean"].replace(0, np.nan)
     df["price_per_sqft_est"] = df["zip_price_per_sqft"] * df["sqft"]
     df["sqft_vs_type_avg"] = df["sqft"] / df["type_sqft_mean"].replace(0, np.nan)
     df["log_type_te_smooth"] = np.log1p(df["type_te_smooth"].clip(lower=0))
-    df["log_zt_te_smooth"] = np.log1p(df["zt_te_smooth"].clip(lower=0))
 
 extra_cols = ["property_age", "sqft_per_bed", "sqft_per_bath", "total_rooms", "bed_bath_ratio",
-              "log_sqft", "sqft_x_baths", "garage_x_sqft", "age_x_sqft",
+              "log_sqft", "sqft_x_baths",
               "zip_te_smooth", "zip_te_count", "zip_te_std", "zip_te_median",
               "zip_te_q25", "zip_te_q75", "zip_te_iqr", "zip_price_per_sqft",
               "log_zip_te_smooth", "zip_sqft_mean", "zip_beds_mean", "zip_age_mean",
-              "zip_baths_mean", "sqft_vs_zip_avg", "beds_vs_zip_avg", "age_vs_zip_avg",
-              "baths_vs_zip_avg", "price_per_sqft_est",
+              "sqft_vs_zip_avg", "beds_vs_zip_avg", "age_vs_zip_avg", "price_per_sqft_est",
               "type_te_smooth", "type_te_count", "type_te_std", "type_te_median",
-              "type_sqft_mean", "sqft_vs_type_avg", "log_type_te_smooth",
-              "zt_te_smooth", "zt_te_count", "log_zt_te_smooth"]
+              "type_sqft_mean", "sqft_vs_type_avg", "log_type_te_smooth"]
 feature_cols = feature_cols + extra_cols
 
 cat_cols = train[feature_cols].select_dtypes(include="object").columns.tolist()
@@ -221,11 +205,11 @@ preds = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
 score = evaluate(y_val, preds)
 print_results(score)
 
-desc = (f"3-ens+zip_type_cross w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
+desc = (f"outlier-clip-1pct 3-ens w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
         f"lgb={study_lgb.best_value:.0f} xgb={study_xgb.best_value:.0f} cb={study_cb.best_value:.0f}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LGB+XGB+CB-zip-type-cross")
+    mlflow.log_param("model", "LGB+XGB+CB-outlier-clip")
     mlflow.log_param("description", desc[:250])
     mlflow.log_param("status", "keep")
