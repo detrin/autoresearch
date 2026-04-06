@@ -1,6 +1,9 @@
 import mlflow
 import lightgbm as lgb
+import numpy as np
+import pandas as pd
 from sklearn.preprocessing import LabelEncoder
+from optbinning import MulticlassOptimalBinning
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
 
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -19,12 +22,23 @@ for col in cat_cols:
     val[col] = le.transform(val[col].astype(str))
     encoders[col] = le
 
+bin_features = ["burnout_score", "mental_health_index", "stress_level", "anxiety_score", "depression_score"]
+bin_encoders = {}
+for col in bin_features:
+    optb = MulticlassOptimalBinning(name=col, max_n_prebins=10, min_prebin_size=0.05, time_limit=30)
+    optb.fit(train[col].values, train[TARGET].values)
+    train[f"{col}_bin"] = optb.transform(train[col].values, metric="indices")
+    val[f"{col}_bin"] = optb.transform(val[col].values, metric="indices")
+    bin_encoders[col] = optb
+
+feature_cols_ext = feature_cols + [f"{col}_bin" for col in bin_features]
+
 le_target = LabelEncoder()
 y_train = le_target.fit_transform(train[TARGET])
 y_val = le_target.transform(val[TARGET])
 
-X_train = train[feature_cols]
-X_val = val[feature_cols]
+X_train = train[feature_cols_ext]
+X_val = val[feature_cols_ext]
 
 model_lgb = lgb.LGBMClassifier(
     n_estimators=500,
@@ -45,10 +59,10 @@ preds_lgb = model_lgb.predict(X_val)
 score = evaluate(val[TARGET], le_target.inverse_transform(preds_lgb))
 print_results(score)
 
-results = [("lgb", score)]
+results = [("lgb_binned", score)]
 
 with mlflow.start_run():
     mlflow.log_metric("val_1-f1", score)
-    mlflow.log_param("model", "LightGBM")
-    mlflow.log_param("description", "LightGBM with label encoding, early stopping")
+    mlflow.log_param("model", "LightGBM+OptimalBinning")
+    mlflow.log_param("description", "LightGBM + MulticlassOptimalBinning features on 5 numeric cols")
     mlflow.log_param("status", "keep")
