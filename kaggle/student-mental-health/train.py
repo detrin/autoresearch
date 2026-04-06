@@ -2,11 +2,10 @@ import mlflow
 import lightgbm as lgb
 import xgboost as xgb
 import numpy as np
-import optuna
+import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
 
-optuna.logging.set_verbosity(optuna.logging.WARNING)
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 mlflow.set_experiment(MLFLOW_EXPERIMENT)
 
@@ -16,6 +15,16 @@ drop_cols = [TARGET]
 feature_cols = [c for c in train.columns if c not in drop_cols]
 
 cat_cols = train[feature_cols].select_dtypes(include="object").columns.tolist()
+
+le_target = LabelEncoder()
+le_target.fit(train[TARGET])
+y_train_num = le_target.transform(train[TARGET])
+
+for col in cat_cols:
+    target_mean = train.groupby(col)[TARGET].apply(lambda x: (le_target.transform(x)).mean())
+    train[f"{col}_te"] = train[col].map(target_mean)
+    val[f"{col}_te"] = val[col].map(target_mean).fillna(target_mean.mean())
+
 encoders = {}
 for col in cat_cols:
     le = LabelEncoder()
@@ -23,43 +32,27 @@ for col in cat_cols:
     val[col] = le.transform(val[col].astype(str))
     encoders[col] = le
 
-le_target = LabelEncoder()
-y_train = le_target.fit_transform(train[TARGET])
+feature_cols_ext = [c for c in train.columns if c not in [TARGET]]
+
+y_train = le_target.transform(train[TARGET])
 y_val = le_target.transform(val[TARGET])
 
-X_train = train[feature_cols]
-X_val = val[feature_cols]
+X_train = train[feature_cols_ext]
+X_val = val[feature_cols_ext]
 
-def objective(trial):
-    params = {
-        "n_estimators": 2000,
-        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.1, log=True),
-        "num_leaves": trial.suggest_int("num_leaves", 63, 255),
-        "min_child_samples": trial.suggest_int("min_child_samples", 5, 50),
-        "subsample": trial.suggest_float("subsample", 0.6, 1.0),
-        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
-        "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 1.0),
-        "reg_lambda": trial.suggest_float("reg_lambda", 0.0, 1.0),
-        "n_jobs": -1,
-        "random_state": 42,
-        "verbose": -1,
-    }
-    m = lgb.LGBMClassifier(**params)
-    m.fit(
-        X_train, y_train,
-        eval_set=[(X_val, y_val)],
-        callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(period=-1)],
-    )
-    preds = m.predict(X_val)
-    return evaluate(val[TARGET], le_target.inverse_transform(preds))
-
-study = optuna.create_study(direction="minimize")
-study.optimize(objective, n_trials=30, timeout=300)
-
-best_params = study.best_params
-best_params.update({"n_estimators": 2000, "n_jobs": -1, "random_state": 42, "verbose": -1})
-
-model_lgb = lgb.LGBMClassifier(**best_params)
+model_lgb = lgb.LGBMClassifier(
+    n_estimators=2000,
+    learning_rate=0.024,
+    num_leaves=231,
+    min_child_samples=11,
+    subsample=0.92,
+    colsample_bytree=0.79,
+    reg_alpha=0.33,
+    reg_lambda=0.049,
+    n_jobs=-1,
+    random_state=42,
+    verbose=-1,
+)
 model_lgb.fit(
     X_train, y_train,
     eval_set=[(X_val, y_val)],
@@ -97,13 +90,12 @@ preds_final = le_target.inverse_transform(np.argmax(preds_ensemble, axis=1))
 score = evaluate(val[TARGET], preds_final)
 print_results(score)
 
-results = [("lgb_optuna", score_lgb), ("xgb", score_xgb), ("ensemble", score)]
+results = [("lgb", score_lgb), ("xgb", score_xgb), ("ensemble", score)]
 for name, s in results:
     print(f"  {name}: {s:.6f}")
-print(f"  best_optuna_params: {study.best_params}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_1-f1", score)
-    mlflow.log_param("model", "LGB_optuna+XGB_ensemble")
-    mlflow.log_param("description", "Optuna-tuned LGB (30 trials) + XGB ensemble 0.6/0.4")
+    mlflow.log_param("model", "LGB_optuna_params+TE+XGB_ensemble")
+    mlflow.log_param("description", "Optuna baked LGB + target encoding + XGB ensemble 0.6/0.4")
     mlflow.log_param("status", "keep")
