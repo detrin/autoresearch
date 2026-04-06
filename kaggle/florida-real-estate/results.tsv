@@ -1,2 +1,30 @@
 commit	val_score	status	description
 896ada4	575853.049254	keep	baseline linear regression
+c066dd8	466916.731885	keep	LightGBM baseline n_est=1000 lr=0.05 leaves=63 early_stop=50
+08dcee1	467734.413046	discard	feat eng: property_age, sqft_per_bed, sqft_per_bath, total_rooms, bed_bath_ratio
+c462ea1	432709.410544	keep	target encoding for zip + basic feat eng
+e0b0507	438261.474588	discard	target enc zip+type+sub_type with median+std+smooth
+1a51b47	392467.599447	keep	optuna 100 trials, zip target enc, lgbm tuned
+2e601ec	407996.122856	discard	tuned lgbm + interaction feats + zip median + has_garage + is_new
+1264674	399117.352116	discard	optuna 200 trials wider search, zip te
+ee41b07	383308.483778	keep	log1p target + optuna 150 trials
+912fb8b	414794.274672	discard	log target + zip/type/zip_type te + interactions, optuna 150
+ea51451	369169.174599	keep	lgb+xgb ensemble, log target, zip te, optuna blend
+be4205d	364695.178248	keep	lgb+xgb+cb 3-model ensemble, log target, zip te
+81275f3	356990.870994	keep	3-ensemble + extended zip feats + relative features
+63ddeaf	344041.771946	keep	3-ensemble + zip quantiles + price_per_sqft estimate
+055554a	335651.547933	keep	3-ensemble + zip + type target encoding
+c267949	340828.368384	discard	3x3-seed ensemble + huber option (worse than exp15)
+a99b267	0	crash	timeout: 3-ens big optuna exceeded 10min
+2d1ed1d	349500.869822	discard	5-seed-avg 3-ensemble (worse than exp15 335652)
+9fc2a79	362116.143829	discard	3-ens + zip_type cross te + more interactions
+98d6e96	465717.007404	discard	outlier removal hurts - val still has outliers
+5ca8507	341584.207259	discard	seeded optuna 3-ens (worse than exp15 335652)
+6a3cebe	355493.105061	discard	stacking Ridge meta on 5-fold OOF
+db1c236	345916.240385	discard	best-of-3 optuna seeds (worse than 335652)
+a4fce9c	342788.901093	discard	4-ens + ExtraTrees + has_sub_type
+d8da567	347038.635085	discard	exp15 rerun (Optuna randomness, 347K vs 335K)
+dc47d0a	343783.604511	discard	decade_built te + is_condo/single_family
+9aed0f8	378400.035288	discard	30-model avg with baked params (no optuna, suboptimal)
+87b5791	344775.097038	discard	optuna+5seed avg (fewer trials, not better)
+1ee882c	344674.392181	discard	sample weight search (not better)
