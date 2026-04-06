@@ -22,42 +22,50 @@ for df in [train, val]:
     df["total_rooms"] = df["beds"] + df["baths"]
     df["bed_bath_ratio"] = df["beds"] / df["baths"].replace(0, np.nan)
     df["log_sqft"] = np.log1p(df["sqft"])
+    df["sqft_x_baths"] = df["sqft"] * df["baths"]
 
 global_mean = train[TARGET].mean()
 smoothing = 10
-zip_stats = train.groupby("zip")[TARGET].agg(["mean", "count", "std", "median"]).reset_index()
-zip_stats.columns = ["zip", "zip_te_mean", "zip_te_count", "zip_te_std", "zip_te_median"]
+
+zip_stats = train.groupby("zip").agg(
+    zip_te_mean=(TARGET, "mean"),
+    zip_te_count=(TARGET, "count"),
+    zip_te_std=(TARGET, "std"),
+    zip_te_median=(TARGET, "median"),
+    zip_sqft_mean=("sqft", "mean"),
+    zip_beds_mean=("beds", "mean"),
+    zip_age_mean=("property_age", "mean"),
+    zip_te_q25=(TARGET, lambda x: x.quantile(0.25)),
+    zip_te_q75=(TARGET, lambda x: x.quantile(0.75)),
+).reset_index()
 zip_stats["zip_te_std"] = zip_stats["zip_te_std"].fillna(0)
 zip_stats["zip_te_smooth"] = (
     (zip_stats["zip_te_count"] * zip_stats["zip_te_mean"] + smoothing * global_mean)
     / (zip_stats["zip_te_count"] + smoothing)
 )
+zip_stats["zip_te_iqr"] = zip_stats["zip_te_q75"] - zip_stats["zip_te_q25"]
+zip_stats["zip_price_per_sqft"] = zip_stats["zip_te_mean"] / zip_stats["zip_sqft_mean"].replace(0, np.nan)
 
-zip_sqft = train.groupby("zip").agg(
-    zip_sqft_mean=("sqft", "mean"),
-    zip_beds_mean=("beds", "mean"),
-    zip_age_mean=("property_age", "mean"),
-).reset_index()
-
-zip_stats = zip_stats.merge(zip_sqft, on="zip", how="left")
-
-train = train.merge(zip_stats.drop(columns=["zip_te_mean"]), on="zip", how="left")
-val = val.merge(zip_stats.drop(columns=["zip_te_mean"]), on="zip", how="left")
-for c in ["zip_te_smooth", "zip_te_median"]:
-    val[c] = val[c].fillna(global_mean)
-for c in ["zip_te_count", "zip_te_std", "zip_sqft_mean", "zip_beds_mean", "zip_age_mean"]:
-    val[c] = val[c].fillna(0)
+merge_cols = [c for c in zip_stats.columns if c != "zip_te_mean"]
+train = train.merge(zip_stats[merge_cols], on="zip", how="left")
+val = val.merge(zip_stats[merge_cols], on="zip", how="left")
+for c in merge_cols[1:]:
+    fill = global_mean if any(k in c for k in ["smooth", "median", "q25", "q75"]) else 0
+    val[c] = val[c].fillna(fill)
 
 for df in [train, val]:
     df["log_zip_te_smooth"] = np.log1p(df["zip_te_smooth"].clip(lower=0))
     df["sqft_vs_zip_avg"] = df["sqft"] / df["zip_sqft_mean"].replace(0, np.nan)
     df["beds_vs_zip_avg"] = df["beds"] / df["zip_beds_mean"].replace(0, np.nan)
     df["age_vs_zip_avg"] = df["property_age"] / df["zip_age_mean"].replace(0, np.nan)
+    df["price_per_sqft_est"] = df["zip_price_per_sqft"] * df["sqft"]
 
 extra_cols = ["property_age", "sqft_per_bed", "sqft_per_bath", "total_rooms", "bed_bath_ratio",
-              "log_sqft", "zip_te_smooth", "zip_te_count", "zip_te_std", "zip_te_median",
+              "log_sqft", "sqft_x_baths",
+              "zip_te_smooth", "zip_te_count", "zip_te_std", "zip_te_median",
+              "zip_te_q25", "zip_te_q75", "zip_te_iqr", "zip_price_per_sqft",
               "log_zip_te_smooth", "zip_sqft_mean", "zip_beds_mean", "zip_age_mean",
-              "sqft_vs_zip_avg", "beds_vs_zip_avg", "age_vs_zip_avg"]
+              "sqft_vs_zip_avg", "beds_vs_zip_avg", "age_vs_zip_avg", "price_per_sqft_est"]
 feature_cols = feature_cols + extra_cols
 
 cat_cols = train[feature_cols].select_dtypes(include="object").columns.tolist()
@@ -170,11 +178,11 @@ preds = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
 score = evaluate(y_val, preds)
 print_results(score)
 
-desc = (f"3-ensemble+zip_feats w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
+desc = (f"3-ens+zip_quantiles+ppsqft w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
         f"lgb={study_lgb.best_value:.0f} xgb={study_xgb.best_value:.0f} cb={study_cb.best_value:.0f}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LGB+XGB+CB-ext-feats")
+    mlflow.log_param("model", "LGB+XGB+CB-zip-ext")
     mlflow.log_param("description", desc[:250])
     mlflow.log_param("status", "keep")
