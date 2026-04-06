@@ -1,4 +1,4 @@
-import subprocess, mlflow, lightgbm as lgb, pandas as pd
+import subprocess, mlflow, lightgbm as lgb, pandas as pd, numpy as np
 from sklearn.preprocessing import LabelEncoder
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
 
@@ -12,14 +12,17 @@ calendar.rename(columns={"date": "order_date"}, inplace=True)
 train = train.merge(calendar, on="order_date", how="left")
 val = val.merge(calendar, on="order_date", how="left")
 
-train["margin"] = train["revenue"] - train["cost"]
-val["margin"] = val["revenue"] - val["cost"]
-train["margin_pct"] = train["margin"] / (train["revenue"] + 1e-9)
-val["margin_pct"] = val["margin"] / (val["revenue"] + 1e-9)
-train["revenue_per_unit"] = train["revenue"] / (train["quantity"] + 1e-9)
-val["revenue_per_unit"] = val["revenue"] / (val["quantity"] + 1e-9)
-train["cost_per_unit"] = train["cost"] / (train["quantity"] + 1e-9)
-val["cost_per_unit"] = val["cost"] / (val["quantity"] + 1e-9)
+for df in [train, val]:
+    df["margin"] = df["revenue"] - df["cost"]
+    df["margin_pct"] = df["margin"] / (df["revenue"] + 1e-9)
+    df["revenue_per_unit"] = df["revenue"] / (df["quantity"] + 1e-9)
+    df["cost_per_unit"] = df["cost"] / (df["quantity"] + 1e-9)
+    df["cost_ratio"] = df["cost"] / (df["revenue"] + 1e-9)
+    df["disc_revenue"] = df["quantity"] * df["unit_price"]
+    df["disc_amount"] = df["disc_revenue"] - df["revenue"]
+    df["price_x_qty"] = df["unit_price"] * df["quantity"]
+    df["weight_x_qty"] = df["weight_g"] * df["quantity"]
+    df["cocoa_x_price"] = df["cocoa_percent"] * df["unit_price"]
 
 drop_cols = [TARGET, "order_id", "order_date"]
 feature_cols = [c for c in train.columns if c not in drop_cols]
@@ -35,16 +38,16 @@ for col in cat_cols:
 X_train, y_train = train[feature_cols], train[TARGET]
 X_val, y_val = val[feature_cols], val[TARGET]
 
-model = lgb.LGBMRegressor(n_estimators=2000, learning_rate=0.05, num_leaves=127, random_state=42, n_jobs=-1,
-                           min_child_samples=50, subsample=0.8, colsample_bytree=0.8)
-model.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(50), lgb.log_evaluation(200)])
+model = lgb.LGBMRegressor(n_estimators=4000, learning_rate=0.03, num_leaves=255, random_state=42, n_jobs=-1,
+                           min_child_samples=30, subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=0.1)
+model.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(100), lgb.log_evaluation(500)])
 preds = model.predict(X_val)
 
 score = evaluate(y_val, preds)
 print_results(score)
 
 commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode().strip()
-description = "LightGBM: +calendar feats, +margin/cost feats, 2000 trees"
+description = "LightGBM: +interaction feats, 4000 trees, lr=0.03, 255 leaves"
 
 with mlflow.start_run():
     mlflow.log_metric("val_mape", score)
