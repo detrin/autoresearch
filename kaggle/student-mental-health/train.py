@@ -1,5 +1,5 @@
 import mlflow
-from sklearn.linear_model import LogisticRegression
+import lightgbm as lgb
 from sklearn.preprocessing import LabelEncoder
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
 
@@ -19,18 +19,36 @@ for col in cat_cols:
     val[col] = le.transform(val[col].astype(str))
     encoders[col] = le
 
-X_train, y_train = train[feature_cols], train[TARGET]
-X_val, y_val = val[feature_cols], val[TARGET]
+le_target = LabelEncoder()
+y_train = le_target.fit_transform(train[TARGET])
+y_val = le_target.transform(val[TARGET])
 
-model = LogisticRegression(max_iter=1000)
-model.fit(X_train, y_train)
-preds = model.predict(X_val)
+X_train = train[feature_cols]
+X_val = val[feature_cols]
 
-score = evaluate(y_val, preds)
+model_lgb = lgb.LGBMClassifier(
+    n_estimators=500,
+    learning_rate=0.05,
+    num_leaves=63,
+    min_child_samples=20,
+    n_jobs=-1,
+    random_state=42,
+    verbose=-1,
+)
+model_lgb.fit(
+    X_train, y_train,
+    eval_set=[(X_val, y_val)],
+    callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(period=-1)],
+)
+
+preds_lgb = model_lgb.predict(X_val)
+score = evaluate(val[TARGET], le_target.inverse_transform(preds_lgb))
 print_results(score)
+
+results = [("lgb", score)]
 
 with mlflow.start_run():
     mlflow.log_metric("val_1-f1", score)
-    mlflow.log_param("model", "LogisticRegression")
-    mlflow.log_param("description", "baseline: label-encoded cats, logistic regression")
+    mlflow.log_param("model", "LightGBM")
+    mlflow.log_param("description", "LightGBM with label encoding, early stopping")
     mlflow.log_param("status", "keep")
