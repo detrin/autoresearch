@@ -23,23 +23,9 @@ for df in [train, val]:
     df["price_x_qty"] = df["unit_price"] * df["quantity"]
     df["weight_x_qty"] = df["weight_g"] * df["quantity"]
     df["cocoa_x_price"] = df["cocoa_percent"] * df["unit_price"]
-
-te_cols = ["product_id", "store_id", "customer_id", "brand", "category", "city", "country", "store_type"]
-global_mean = train[TARGET].mean()
-for col in te_cols:
-    means = train.groupby(col)[TARGET].mean()
-    train[f"{col}_te"] = train[col].map(means).fillna(global_mean)
-    val[f"{col}_te"] = val[col].map(means).fillna(global_mean)
-
-store_stats = train.groupby("store_id")[TARGET].agg(["mean", "std", "count"])
-store_stats.columns = ["store_profit_mean", "store_profit_std", "store_count"]
-train = train.merge(store_stats, on="store_id", how="left")
-val = val.merge(store_stats, on="store_id", how="left")
-
-product_stats = train.groupby("product_id")["margin"].agg(["mean", "std"])
-product_stats.columns = ["product_margin_mean", "product_margin_std"]
-train = train.merge(product_stats, on="product_id", how="left")
-val = val.merge(product_stats, on="product_id", how="left")
+    df["margin_per_unit"] = df["margin"] / (df["quantity"] + 1e-9)
+    df["margin_per_weight"] = df["margin"] / (df["weight_g"] + 1e-9)
+    df["discount_flag"] = (df["discount"] > 0).astype(int)
 
 drop_cols = [TARGET, "order_id", "order_date"]
 feature_cols = [c for c in train.columns if c not in drop_cols]
@@ -55,8 +41,11 @@ for col in cat_cols:
 X_train, y_train = train[feature_cols], train[TARGET]
 X_val, y_val = val[feature_cols], val[TARGET]
 
-model = lgb.LGBMRegressor(n_estimators=2000, learning_rate=0.05, num_leaves=255, random_state=42, n_jobs=-1,
-                           min_child_samples=30, subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=0.1)
+model = lgb.LGBMRegressor(
+    n_estimators=2000, learning_rate=0.05, num_leaves=511, random_state=42, n_jobs=-1,
+    min_child_samples=20, subsample=0.7, colsample_bytree=0.7,
+    reg_alpha=0.01, reg_lambda=0.01, max_depth=-1, min_split_gain=0.0
+)
 model.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(100), lgb.log_evaluation(500)])
 preds = model.predict(X_val)
 
@@ -64,7 +53,7 @@ score = evaluate(y_val, preds)
 print_results(score)
 
 commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode().strip()
-description = "LightGBM: +target encoding IDs/cats, +store/product stats"
+description = "LightGBM: 511 leaves, +margin_per_unit/weight, discount_flag"
 
 with mlflow.start_run():
     mlflow.log_metric("val_mape", score)
