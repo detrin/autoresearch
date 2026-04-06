@@ -31,7 +31,7 @@ X_val = val[feature_cols]
 model_lgb = lgb.LGBMClassifier(
     n_estimators=2000,
     learning_rate=0.02,
-    num_leaves=127,
+    num_leaves=255,
     min_child_samples=10,
     subsample=0.8,
     colsample_bytree=0.8,
@@ -50,7 +50,7 @@ model_lgb.fit(
 model_xgb = xgb.XGBClassifier(
     n_estimators=1000,
     learning_rate=0.05,
-    max_depth=7,
+    max_depth=8,
     subsample=0.8,
     colsample_bytree=0.8,
     reg_alpha=0.1,
@@ -73,7 +73,16 @@ preds_xgb = model_xgb.predict_proba(X_val)
 score_lgb = evaluate(val[TARGET], le_target.inverse_transform(np.argmax(preds_lgb, axis=1)))
 score_xgb = evaluate(val[TARGET], le_target.inverse_transform(np.argmax(preds_xgb, axis=1)))
 
-preds_ensemble = 0.6 * preds_lgb + 0.4 * preds_xgb
+best_score = 1.0
+best_w = 0.6
+for w in np.arange(0.5, 1.01, 0.05):
+    blend = w * preds_lgb + (1 - w) * preds_xgb
+    s = evaluate(val[TARGET], le_target.inverse_transform(np.argmax(blend, axis=1)))
+    if s < best_score:
+        best_score = s
+        best_w = w
+
+preds_ensemble = best_w * preds_lgb + (1 - best_w) * preds_xgb
 preds_final = le_target.inverse_transform(np.argmax(preds_ensemble, axis=1))
 score = evaluate(val[TARGET], preds_final)
 print_results(score)
@@ -81,9 +90,10 @@ print_results(score)
 results = [("lgb", score_lgb), ("xgb", score_xgb), ("ensemble", score)]
 for name, s in results:
     print(f"  {name}: {s:.6f}")
+print(f"  best_weight_lgb: {best_w:.2f}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_1-f1", score)
-    mlflow.log_param("model", "LGB+XGB_ensemble")
-    mlflow.log_param("description", "LightGBM + XGBoost ensemble blend 0.6/0.4")
+    mlflow.log_param("model", "LGB+XGB_ensemble_tuned")
+    mlflow.log_param("description", f"LGB(255 leaves) + XGB(depth 8) ensemble, weight search, best_w={best_w:.2f}")
     mlflow.log_param("status", "keep")
