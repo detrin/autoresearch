@@ -108,10 +108,8 @@ y_val_log = np.log1p(y_val)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 def objective_lgb(trial):
-    obj = trial.suggest_categorical("objective", ["regression", "huber", "fair"])
     params = {
         "n_estimators": 3000,
-        "objective": obj,
         "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.15, log=True),
         "num_leaves": trial.suggest_int("num_leaves", 20, 300),
         "max_depth": trial.suggest_int("max_depth", 3, 20),
@@ -164,10 +162,8 @@ model_xgb.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)], verbose=False
 preds_xgb = np.expm1(model_xgb.predict(X_val))
 
 def objective_cb(trial):
-    loss = trial.suggest_categorical("loss_function", ["RMSE", "MAE", "Quantile:alpha=0.5", "Huber:delta=1.0"])
     params = {
         "iterations": 3000,
-        "loss_function": loss,
         "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.15, log=True),
         "depth": trial.suggest_int("depth", 3, 12),
         "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1e-8, 50.0, log=True),
@@ -176,9 +172,13 @@ def objective_cb(trial):
         "random_seed": 42,
         "verbose": 0,
     }
-    m = CatBoostRegressor(**params)
-    m.fit(X_train, y_train_log, eval_set=(X_val, y_val_log), early_stopping_rounds=100)
-    return evaluate(y_val, np.expm1(m.predict(X_val)))
+    try:
+        m = CatBoostRegressor(**params)
+        m.fit(X_train, y_train_log, eval_set=(X_val, y_val_log), early_stopping_rounds=100)
+        p = np.expm1(np.clip(m.predict(X_val), 0, 25))
+        return evaluate(y_val, p)
+    except Exception:
+        return float("inf")
 
 study_cb = optuna.create_study(direction="minimize")
 study_cb.optimize(objective_cb, n_trials=50, timeout=240)
@@ -186,7 +186,7 @@ best_cb = study_cb.best_params
 best_cb.update({"iterations": 3000, "random_seed": 42, "verbose": 0})
 model_cb = CatBoostRegressor(**best_cb)
 model_cb.fit(X_train, y_train_log, eval_set=(X_val, y_val_log), early_stopping_rounds=100)
-preds_cb = np.expm1(model_cb.predict(X_val))
+preds_cb = np.expm1(np.clip(model_cb.predict(X_val), 0, 25))
 
 def objective_blend(trial):
     w1 = trial.suggest_float("lgb_w", 0.0, 1.0)
@@ -205,12 +205,11 @@ preds = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
 score = evaluate(y_val, preds)
 print_results(score)
 
-desc = (f"huber/fair loss search w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
-        f"lgb={study_lgb.best_value:.0f} xgb={study_xgb.best_value:.0f} cb={study_cb.best_value:.0f}, "
-        f"lgb_obj={best_lgb.get('objective','?')} cb_loss={best_cb.get('loss_function','?')}")
+desc = (f"3-ens exp15 rerun w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
+        f"lgb={study_lgb.best_value:.0f} xgb={study_xgb.best_value:.0f} cb={study_cb.best_value:.0f}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LGB+XGB+CB-loss-search")
+    mlflow.log_param("model", "LGB+XGB+CB-exp15-rerun")
     mlflow.log_param("description", desc[:250])
     mlflow.log_param("status", "keep")
