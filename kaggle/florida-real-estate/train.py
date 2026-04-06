@@ -12,10 +12,6 @@ mlflow.set_experiment(MLFLOW_EXPERIMENT)
 
 train, val = load_data()
 
-q99 = train[TARGET].quantile(0.99)
-q01 = train[TARGET].quantile(0.01)
-train = train[(train[TARGET] >= q01) & (train[TARGET] <= q99)].reset_index(drop=True)
-
 drop_cols = [TARGET, "listPrice"]
 feature_cols = [c for c in train.columns if c not in drop_cols]
 
@@ -111,6 +107,8 @@ y_val_log = np.log1p(y_val)
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
+sampler_lgb = optuna.samplers.TPESampler(seed=42)
+
 def objective_lgb(trial):
     params = {
         "n_estimators": 3000,
@@ -130,14 +128,16 @@ def objective_lgb(trial):
           callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
     return evaluate(y_val, np.expm1(m.predict(X_val)))
 
-study_lgb = optuna.create_study(direction="minimize")
-study_lgb.optimize(objective_lgb, n_trials=120, timeout=240)
+study_lgb = optuna.create_study(direction="minimize", sampler=sampler_lgb)
+study_lgb.optimize(objective_lgb, n_trials=150, timeout=300)
 best_lgb = study_lgb.best_params
 best_lgb.update({"n_estimators": 3000, "random_state": 42, "verbosity": -1})
 model_lgb = lgb.LGBMRegressor(**best_lgb)
 model_lgb.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)],
               callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
 preds_lgb = np.expm1(model_lgb.predict(X_val))
+
+sampler_xgb = optuna.samplers.TPESampler(seed=123)
 
 def objective_xgb(trial):
     params = {
@@ -157,13 +157,15 @@ def objective_xgb(trial):
     m.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)], verbose=False)
     return evaluate(y_val, np.expm1(m.predict(X_val)))
 
-study_xgb = optuna.create_study(direction="minimize")
-study_xgb.optimize(objective_xgb, n_trials=80, timeout=180)
+study_xgb = optuna.create_study(direction="minimize", sampler=sampler_xgb)
+study_xgb.optimize(objective_xgb, n_trials=100, timeout=240)
 best_xgb = study_xgb.best_params
 best_xgb.update({"n_estimators": 3000, "random_state": 42, "verbosity": 0, "tree_method": "hist"})
 model_xgb = xgb.XGBRegressor(**best_xgb, early_stopping_rounds=100)
 model_xgb.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)], verbose=False)
 preds_xgb = np.expm1(model_xgb.predict(X_val))
+
+sampler_cb = optuna.samplers.TPESampler(seed=777)
 
 def objective_cb(trial):
     params = {
@@ -180,8 +182,8 @@ def objective_cb(trial):
     m.fit(X_train, y_train_log, eval_set=(X_val, y_val_log), early_stopping_rounds=100)
     return evaluate(y_val, np.expm1(m.predict(X_val)))
 
-study_cb = optuna.create_study(direction="minimize")
-study_cb.optimize(objective_cb, n_trials=50, timeout=180)
+study_cb = optuna.create_study(direction="minimize", sampler=sampler_cb)
+study_cb.optimize(objective_cb, n_trials=60, timeout=240)
 best_cb = study_cb.best_params
 best_cb.update({"iterations": 3000, "random_seed": 42, "verbose": 0})
 model_cb = CatBoostRegressor(**best_cb)
@@ -195,8 +197,8 @@ def objective_blend(trial):
     blend = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
     return evaluate(y_val, blend)
 
-study_blend = optuna.create_study(direction="minimize")
-study_blend.optimize(objective_blend, n_trials=300)
+study_blend = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=42))
+study_blend.optimize(objective_blend, n_trials=500)
 w1 = study_blend.best_params["lgb_w"]
 w2 = study_blend.best_params["xgb_w"]
 w3 = 1.0 - w1 - w2
@@ -205,11 +207,11 @@ preds = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
 score = evaluate(y_val, preds)
 print_results(score)
 
-desc = (f"outlier-clip-1pct 3-ens w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
+desc = (f"seeded-optuna 3-ens w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
         f"lgb={study_lgb.best_value:.0f} xgb={study_xgb.best_value:.0f} cb={study_cb.best_value:.0f}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LGB+XGB+CB-outlier-clip")
+    mlflow.log_param("model", "LGB+XGB+CB-seeded-optuna")
     mlflow.log_param("description", desc[:250])
     mlflow.log_param("status", "keep")
