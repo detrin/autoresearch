@@ -105,13 +105,9 @@ y_train_log = np.log1p(train[TARGET])
 y_val = val[TARGET]
 y_val_log = np.log1p(y_val)
 
-sample_weights = np.sqrt(train[TARGET].values / train[TARGET].median())
-sample_weights = np.clip(sample_weights, 0.1, 10.0)
-
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 def objective_lgb(trial):
-    use_weights = trial.suggest_categorical("use_weights", [True, False])
     params = {
         "n_estimators": 3000,
         "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.15, log=True),
@@ -126,21 +122,19 @@ def objective_lgb(trial):
         "verbosity": -1,
     }
     m = lgb.LGBMRegressor(**params)
-    sw = sample_weights if use_weights else None
-    m.fit(X_train, y_train_log, sample_weight=sw, eval_set=[(X_val, y_val_log)],
+    m.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)],
           callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
     return evaluate(y_val, np.expm1(m.predict(X_val)))
 
 study_lgb = optuna.create_study(direction="minimize")
 study_lgb.optimize(objective_lgb, n_trials=120, timeout=300)
 best_lgb = study_lgb.best_params
-use_w_lgb = best_lgb.pop("use_weights")
 best_lgb.update({"n_estimators": 3000, "random_state": 42, "verbosity": -1})
 model_lgb = lgb.LGBMRegressor(**best_lgb)
-model_lgb.fit(X_train, y_train_log, sample_weight=sample_weights if use_w_lgb else None,
-              eval_set=[(X_val, y_val_log)],
+model_lgb.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)],
               callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
-preds_lgb = np.expm1(model_lgb.predict(X_val))
+preds_lgb_log = model_lgb.predict(X_val)
+preds_lgb = np.expm1(preds_lgb_log)
 
 def objective_xgb(trial):
     params = {
@@ -166,7 +160,8 @@ best_xgb = study_xgb.best_params
 best_xgb.update({"n_estimators": 3000, "random_state": 42, "verbosity": 0, "tree_method": "hist"})
 model_xgb = xgb.XGBRegressor(**best_xgb, early_stopping_rounds=100)
 model_xgb.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)], verbose=False)
-preds_xgb = np.expm1(model_xgb.predict(X_val))
+preds_xgb_log = model_xgb.predict(X_val)
+preds_xgb = np.expm1(preds_xgb_log)
 
 def objective_cb(trial):
     params = {
@@ -189,30 +184,51 @@ best_cb = study_cb.best_params
 best_cb.update({"iterations": 3000, "random_seed": 42, "verbose": 0})
 model_cb = CatBoostRegressor(**best_cb)
 model_cb.fit(X_train, y_train_log, eval_set=(X_val, y_val_log), early_stopping_rounds=100)
-preds_cb = np.expm1(model_cb.predict(X_val))
+preds_cb_log = model_cb.predict(X_val)
+preds_cb = np.expm1(preds_cb_log)
 
-def objective_blend(trial):
+def objective_blend_orig(trial):
     w1 = trial.suggest_float("lgb_w", 0.0, 1.0)
     w2 = trial.suggest_float("xgb_w", 0.0, 1.0 - w1)
     w3 = 1.0 - w1 - w2
     blend = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
     return evaluate(y_val, blend)
 
-study_blend = optuna.create_study(direction="minimize")
-study_blend.optimize(objective_blend, n_trials=300)
-w1 = study_blend.best_params["lgb_w"]
-w2 = study_blend.best_params["xgb_w"]
-w3 = 1.0 - w1 - w2
+study_orig = optuna.create_study(direction="minimize")
+study_orig.optimize(objective_blend_orig, n_trials=300)
 
-preds = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
+def objective_blend_log(trial):
+    w1 = trial.suggest_float("lgb_w", 0.0, 1.0)
+    w2 = trial.suggest_float("xgb_w", 0.0, 1.0 - w1)
+    w3 = 1.0 - w1 - w2
+    blend_log = w1 * preds_lgb_log + w2 * preds_xgb_log + w3 * preds_cb_log
+    return evaluate(y_val, np.expm1(blend_log))
+
+study_log = optuna.create_study(direction="minimize")
+study_log.optimize(objective_blend_log, n_trials=300)
+
+if study_log.best_value < study_orig.best_value:
+    w1 = study_log.best_params["lgb_w"]
+    w2 = study_log.best_params["xgb_w"]
+    w3 = 1.0 - w1 - w2
+    preds = np.expm1(w1 * preds_lgb_log + w2 * preds_xgb_log + w3 * preds_cb_log)
+    blend_mode = "log"
+else:
+    w1 = study_orig.best_params["lgb_w"]
+    w2 = study_orig.best_params["xgb_w"]
+    w3 = 1.0 - w1 - w2
+    preds = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
+    blend_mode = "orig"
+
 score = evaluate(y_val, preds)
 print_results(score)
 
-desc = (f"sample_weight_search w={w1:.2f}/{w2:.2f}/{w3:.2f}, use_w_lgb={use_w_lgb}, "
-        f"lgb={study_lgb.best_value:.0f} xgb={study_xgb.best_value:.0f} cb={study_cb.best_value:.0f}")
+desc = (f"{blend_mode}-blend w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
+        f"lgb={study_lgb.best_value:.0f} xgb={study_xgb.best_value:.0f} cb={study_cb.best_value:.0f}, "
+        f"orig={study_orig.best_value:.0f} log={study_log.best_value:.0f}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LGB+XGB+CB-sample-weights")
+    mlflow.log_param("model", "LGB+XGB+CB-dual-blend")
     mlflow.log_param("description", desc[:250])
     mlflow.log_param("status", "keep")
