@@ -21,24 +21,43 @@ for df in [train, val]:
     df["sqft_per_bath"] = df["sqft"] / df["baths"].replace(0, np.nan)
     df["total_rooms"] = df["beds"] + df["baths"]
     df["bed_bath_ratio"] = df["beds"] / df["baths"].replace(0, np.nan)
+    df["log_sqft"] = np.log1p(df["sqft"])
 
 global_mean = train[TARGET].mean()
 smoothing = 10
-zip_stats = train.groupby("zip")[TARGET].agg(["mean", "count", "std"]).reset_index()
-zip_stats.columns = ["zip", "zip_te_mean", "zip_te_count", "zip_te_std"]
+zip_stats = train.groupby("zip")[TARGET].agg(["mean", "count", "std", "median"]).reset_index()
+zip_stats.columns = ["zip", "zip_te_mean", "zip_te_count", "zip_te_std", "zip_te_median"]
 zip_stats["zip_te_std"] = zip_stats["zip_te_std"].fillna(0)
 zip_stats["zip_te_smooth"] = (
     (zip_stats["zip_te_count"] * zip_stats["zip_te_mean"] + smoothing * global_mean)
     / (zip_stats["zip_te_count"] + smoothing)
 )
-train = train.merge(zip_stats[["zip", "zip_te_smooth", "zip_te_count", "zip_te_std"]], on="zip", how="left")
-val = val.merge(zip_stats[["zip", "zip_te_smooth", "zip_te_count", "zip_te_std"]], on="zip", how="left")
-val["zip_te_smooth"] = val["zip_te_smooth"].fillna(global_mean)
-val["zip_te_count"] = val["zip_te_count"].fillna(0)
-val["zip_te_std"] = val["zip_te_std"].fillna(0)
+
+zip_sqft = train.groupby("zip").agg(
+    zip_sqft_mean=("sqft", "mean"),
+    zip_beds_mean=("beds", "mean"),
+    zip_age_mean=("property_age", "mean"),
+).reset_index()
+
+zip_stats = zip_stats.merge(zip_sqft, on="zip", how="left")
+
+train = train.merge(zip_stats.drop(columns=["zip_te_mean"]), on="zip", how="left")
+val = val.merge(zip_stats.drop(columns=["zip_te_mean"]), on="zip", how="left")
+for c in ["zip_te_smooth", "zip_te_median"]:
+    val[c] = val[c].fillna(global_mean)
+for c in ["zip_te_count", "zip_te_std", "zip_sqft_mean", "zip_beds_mean", "zip_age_mean"]:
+    val[c] = val[c].fillna(0)
+
+for df in [train, val]:
+    df["log_zip_te_smooth"] = np.log1p(df["zip_te_smooth"].clip(lower=0))
+    df["sqft_vs_zip_avg"] = df["sqft"] / df["zip_sqft_mean"].replace(0, np.nan)
+    df["beds_vs_zip_avg"] = df["beds"] / df["zip_beds_mean"].replace(0, np.nan)
+    df["age_vs_zip_avg"] = df["property_age"] / df["zip_age_mean"].replace(0, np.nan)
 
 extra_cols = ["property_age", "sqft_per_bed", "sqft_per_bath", "total_rooms", "bed_bath_ratio",
-              "zip_te_smooth", "zip_te_count", "zip_te_std"]
+              "log_sqft", "zip_te_smooth", "zip_te_count", "zip_te_std", "zip_te_median",
+              "log_zip_te_smooth", "zip_sqft_mean", "zip_beds_mean", "zip_age_mean",
+              "sqft_vs_zip_avg", "beds_vs_zip_avg", "age_vs_zip_avg"]
 feature_cols = feature_cols + extra_cols
 
 cat_cols = train[feature_cols].select_dtypes(include="object").columns.tolist()
@@ -77,7 +96,7 @@ def objective_lgb(trial):
     return evaluate(y_val, np.expm1(m.predict(X_val)))
 
 study_lgb = optuna.create_study(direction="minimize")
-study_lgb.optimize(objective_lgb, n_trials=100, timeout=240)
+study_lgb.optimize(objective_lgb, n_trials=120, timeout=300)
 best_lgb = study_lgb.best_params
 best_lgb.update({"n_estimators": 3000, "random_state": 42, "verbosity": -1})
 model_lgb = lgb.LGBMRegressor(**best_lgb)
@@ -142,7 +161,7 @@ def objective_blend(trial):
     return evaluate(y_val, blend)
 
 study_blend = optuna.create_study(direction="minimize")
-study_blend.optimize(objective_blend, n_trials=200)
+study_blend.optimize(objective_blend, n_trials=300)
 w1 = study_blend.best_params["lgb_w"]
 w2 = study_blend.best_params["xgb_w"]
 w3 = 1.0 - w1 - w2
@@ -151,11 +170,11 @@ preds = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
 score = evaluate(y_val, preds)
 print_results(score)
 
-desc = (f"lgb+xgb+cb ensemble w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
+desc = (f"3-ensemble+zip_feats w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
         f"lgb={study_lgb.best_value:.0f} xgb={study_xgb.best_value:.0f} cb={study_cb.best_value:.0f}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LGB+XGB+CB-ensemble")
+    mlflow.log_param("model", "LGB+XGB+CB-ext-feats")
     mlflow.log_param("description", desc[:250])
     mlflow.log_param("status", "keep")
