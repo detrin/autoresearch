@@ -42,9 +42,9 @@ X_train, y_train = train[feature_cols], train[TARGET]
 X_val, y_val = val[feature_cols], val[TARGET]
 
 model = lgb.LGBMRegressor(
-    n_estimators=2000, learning_rate=0.05, num_leaves=511, random_state=42, n_jobs=-1,
-    min_child_samples=20, subsample=0.7, colsample_bytree=0.7,
-    reg_alpha=0.01, reg_lambda=0.01, max_depth=-1, min_split_gain=0.0
+    n_estimators=2000, learning_rate=0.05, num_leaves=255, random_state=42, n_jobs=-1,
+    min_child_samples=30, subsample=0.8, colsample_bytree=0.8,
+    reg_alpha=0.1, reg_lambda=0.1
 )
 model.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(100), lgb.log_evaluation(500)])
 preds = model.predict(X_val)
@@ -53,7 +53,7 @@ score = evaluate(y_val, preds)
 print_results(score)
 
 commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode().strip()
-description = "LightGBM: 511 leaves, +margin_per_unit/weight, discount_flag"
+description = "LightGBM: 255 leaves, +margin_per_unit/weight, discount_flag"
 
 with mlflow.start_run():
     mlflow.log_metric("val_mape", score)
