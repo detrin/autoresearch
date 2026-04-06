@@ -1,0 +1,14 @@
+{
+  "id": "<kaggle-user>/<kernel-slug>",
+  "title": "<Kernel Title>",
+  "code_file": "notebook_executed.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": false,
+  "enable_internet": true,
+  "dataset_sources": ["<owner>/<dataset-slug>"],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}

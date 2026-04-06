@@ -16,7 +16,9 @@ Agent autonomously runs ML experiments in a loop. Human writes strategy, agent w
 ```
 autoresearch/
 ├── kaggle/
-│   ├── CLAUDE.md
+│   ├── AGENTS.md
+│   ├── deadline.py
+│   ├── template/              ← notebook template & kernel-metadata scaffold
 │   ├── job-salary-prediction/
 │   ├── chocolate-sales/
 │   ├── financial-fraud/
@@ -52,26 +54,51 @@ Worktrees let multiple agents run experiments **in parallel** on different branc
 1. Pick a project and agree on a run tag (e.g., `apr5-salary`)
 2. Read all in-scope files for full context (`prepare.py`, `train.py`, data samples)
 3. Create worktree: `git worktree add .worktrees/<tag> -b autoresearch/<tag>`
-4. Run baseline (unmodified `train.py`) and log to both MLflow and `results.tsv`
+4. **Run baseline FIRST** — run the unmodified `train.py` before any changes. Log as experiment #0. This is the true baseline all improvements are measured against. Do NOT skip this step.
 
-### Loop (runs until interrupted)
+### Loop (runs until deadline)
 
-1. **Examine** — MLflow dashboard, `results.tsv`, recent experiment outcomes
-2. **Modify `train.py`** — one idea per experiment
-3. **Git commit** the change in the worktree
-4. **Run:** `python train.py > run.log 2>&1`
-5. **Read results:** grep the metric from `run.log`
-6. **Handle crashes:** if no metric found, `tail -n 50 run.log`, attempt fix, give up after 3 tries
-7. **Log to MLflow:**
+1. **Check deadline** — `python kaggle/deadline.py check`. If False, go to Finalize Phase.
+2. **Check remaining time** — if <15 minutes remaining, do NOT start Optuna, ensemble tuning, or any long-running experiment. Go to Finalize Phase.
+3. **Examine** — MLflow dashboard, `results.tsv`, recent experiment outcomes
+4. **Modify `train.py`** — one idea per experiment
+5. **Git commit** the change in the worktree
+6. **Run:** `timeout 600 python train.py > run.log 2>&1` (ALWAYS use `timeout 600`)
+7. **Read results:** grep the metric from `run.log`
+8. **Handle crashes:** if no metric found, `tail -n 50 run.log`, attempt fix, give up after 3 tries
+9. **Log to MLflow:**
    - `mlflow.set_experiment("<project-name>")`
    - `mlflow.log_metric("val_score", score)`
    - `mlflow.log_param("commit", short_hash)`
    - `mlflow.log_param("description", what_changed)`
    - `mlflow.log_param("status", "keep" | "discard" | "crash")`
    - Timestamp is automatic — MLflow records `start_time` on every run
-8. **Log to `results.tsv`** — same data, as lightweight fallback
-9. **If score improved:** keep the commit, continue building on it
-10. **If score equal or worse:** start next experiment from the last best commit (new worktree or revert in current)
+10. **Log to `results.tsv`** — same data, as lightweight fallback
+11. **If score improved:** keep the commit, continue building on it
+12. **If score equal or worse:** start next experiment from the last best commit (new worktree or revert in current)
+
+### Mandatory Experiments
+
+The agent MUST run these experiments (in any order) before free exploration:
+
+1. **Baseline** — unmodified `train.py`, no changes
+2. **datasci-toolkit experiment** — use `ContinuousOptimalBinning2D` on at least 2 feature pairs, or `OptimalBinner`/`QuantileBinner` for binning. Install with `pip install datasci-toolkit`.
+
+After these two, the agent is free to explore any approach.
+
+### Finalize Phase
+
+When <10 minutes remain OR deadline is reached:
+
+1. **Stop experimenting.** No new ideas.
+2. **Identify best commit** from MLflow/results.tsv
+3. **Checkout best commit's train.py** and run it one final time to confirm the score
+4. **Write structured summary:**
+   - Best commit hash and score
+   - Improvement over baseline (%)
+   - What worked (ranked by impact)
+   - What didn't work
+   - Ideas not tried (for next session)
 
 ## MLflow Logging Requirements
 
@@ -129,11 +156,15 @@ timeout 600 python train.py > run.log 2>&1
 
 - **NEVER STOP** unless deadline is reached. Do not pause to ask the human. Run until deadline.
 - **CHECK DEADLINE** before every experiment iteration. If `check_deadline()` returns False, stop immediately.
+- **ALWAYS use `timeout 600`** when running `python train.py`. Never run without it.
+- **Baseline first.** Run unmodified `train.py` as experiment #0 before any changes.
+- **Finalize with 10 min left.** Stop experimenting, confirm best score, write summary.
 - **Per-run timeout:** If a single run exceeds 10 minutes, kill it and treat as crash.
 - **Simplicity wins.** Equal score + simpler code = improvement.
 - **Only modify `train.py`.** Never touch `prepare.py`.
 - **One idea per experiment.** Atomic changes make results interpretable.
 - **Always log to MLflow.** `results.tsv` is the fallback, MLflow is the source of truth.
+- **Try datasci-toolkit.** At least one experiment must use it (binning, 2D features, etc.).
 - **When stuck:** re-read `prepare.py` and data, check MLflow for patterns in what worked/failed, try combining near-misses, try radical approaches.
 
 ## Projects
@@ -173,28 +204,68 @@ The agent MAY install additional packages (xgboost, catboost, pytorch, feature-e
 - All experiments comparable within a project (same data split, same eval function)
 - Worktrees cleaned up after experiments are analyzed: `git worktree remove .worktrees/<tag>`
 
+### Variable Naming (train.py and notebooks)
+
+Consistent names across all projects:
+
+| Variable | Convention | Example |
+|----------|-----------|---------|
+| Split data | `X_train`, `X_val`, `y_train`, `y_val` | always |
+| Predictions | `preds_{model}` | `preds_lgb`, `preds_xgb`, `preds_cb` |
+| Models | `model_{name}` | `model_lgb`, `model_xgb`, `model_cb` |
+| Per-model scores | `{metric}_{name}` | `rmse_lgb`, `mape_xgb` |
+| Ensemble predictions | `preds_ensemble` | always |
+| Results list | `results` | list of `(name, score)` tuples |
+| Feature columns | `feature_cols` | always |
+| Categorical columns | `cat_cols` | always |
+| Drop columns | `drop_cols` | always |
+
 ## Publishing
 
 Only after the experiment loop produces a strong result:
 1. Find best run in MLflow, note the commit hash
 2. Cherry-pick or extract best `train.py` from that branch
-3. Create a clean Kaggle notebook combining `prepare.py` + `train.py`
+3. Create a clean Kaggle notebook from `kaggle/template/notebook_template.ipynb` — fill in project-specific code
 4. Execute notebook locally with `jupyter nbconvert --execute` to verify it runs clean
 5. Push to Kaggle with `kaggle kernels push`
 6. Check status with `kaggle kernels status <user>/<kernel-slug>` — must show `COMPLETE`
 
+### Notebook Template
+
+Use `kaggle/template/notebook_template.ipynb` as the starting point for every published notebook. The template enforces:
+
+1. **Header** (markdown) — title, dataset link, task type, approach summary, best result table
+2. **Setup & Data Loading** — imports, `find_file()` helper, load CSVs, print shape
+3. **EDA** — target stats, null counts, 2x2 subplot (distribution, by-category, scatter, correlation)
+4. **Data Preparation** — train/val split, feature engineering, label encoding
+5. **Baseline** — LinearRegression with `.fillna(0)`, always include this
+6. **Best Model(s)** — baked hyperparams (no Optuna at runtime), `%%time` on training cells
+7. **Ensemble** — weighted blend with grid search, print individual model scores first
+8. **Diagnostics** — feature importance bar + predicted vs actual scatter
+9. **Results Summary** — DataFrame table + horizontal bar chart
+10. **Conclusions** — what worked (ranked), what didn't, takeaway
+
+Rules:
+- Always use `find_file()` for Kaggle/local path portability
+- Always `fillna(0)` for LinearRegression baseline
+- Always `%%time` on model training cells
+- Always print `df.info()` or null counts in EDA
+- Bake Optuna-tuned params directly — no search at runtime
+- Print individual model scores before ensemble so improvement from blending is visible
+- Footer: `*Generated via [autoresearch](https://github.com/detrin/autoresearch)*`
+
 ### Kaggle Data Paths
 
-On Kaggle, datasets are mounted at `/kaggle/input/<dataset-slug>/`. Notebooks must handle both local and Kaggle paths:
+Use the standard `find_file()` helper (defined in template):
 
 ```python
-import os
-
-DATA_FILE = "my_dataset.csv"
-if os.path.exists(f"/kaggle/input/<dataset-slug>/{DATA_FILE}"):
-    DATA_PATH = f"/kaggle/input/<dataset-slug>/{DATA_FILE}"
-else:
-    DATA_PATH = DATA_FILE
+def find_file(name):
+    kaggle_matches = glob.glob(f"/kaggle/input/**/{name}", recursive=True)
+    if kaggle_matches:
+        return kaggle_matches[0]
+    if os.path.exists(name):
+        return name
+    raise FileNotFoundError(f"Cannot find {name}")
 ```
 
 ### Kaggle Kernel Metadata
