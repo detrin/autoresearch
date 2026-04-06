@@ -5,6 +5,8 @@ import lightgbm as lgb
 import xgboost as xgb
 from catboost import CatBoostRegressor
 from sklearn.preprocessing import LabelEncoder
+from sklearn.linear_model import Ridge
+from sklearn.model_selection import KFold
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
 
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -99,15 +101,13 @@ for col in cat_cols:
     val[col] = le.transform(val[col].astype(str))
     encoders[col] = le
 
-X_train = train[feature_cols].fillna(-1)
-X_val = val[feature_cols].fillna(-1)
-y_train_log = np.log1p(train[TARGET])
-y_val = val[TARGET]
+X_train = train[feature_cols].fillna(-1).values
+X_val = val[feature_cols].fillna(-1).values
+y_train_log = np.log1p(train[TARGET].values)
+y_val = val[TARGET].values
 y_val_log = np.log1p(y_val)
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
-
-sampler_lgb = optuna.samplers.TPESampler(seed=42)
 
 def objective_lgb(trial):
     params = {
@@ -128,16 +128,10 @@ def objective_lgb(trial):
           callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
     return evaluate(y_val, np.expm1(m.predict(X_val)))
 
-study_lgb = optuna.create_study(direction="minimize", sampler=sampler_lgb)
-study_lgb.optimize(objective_lgb, n_trials=150, timeout=300)
+study_lgb = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=42))
+study_lgb.optimize(objective_lgb, n_trials=120, timeout=240)
 best_lgb = study_lgb.best_params
 best_lgb.update({"n_estimators": 3000, "random_state": 42, "verbosity": -1})
-model_lgb = lgb.LGBMRegressor(**best_lgb)
-model_lgb.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)],
-              callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
-preds_lgb = np.expm1(model_lgb.predict(X_val))
-
-sampler_xgb = optuna.samplers.TPESampler(seed=123)
 
 def objective_xgb(trial):
     params = {
@@ -157,15 +151,10 @@ def objective_xgb(trial):
     m.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)], verbose=False)
     return evaluate(y_val, np.expm1(m.predict(X_val)))
 
-study_xgb = optuna.create_study(direction="minimize", sampler=sampler_xgb)
-study_xgb.optimize(objective_xgb, n_trials=100, timeout=240)
+study_xgb = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=123))
+study_xgb.optimize(objective_xgb, n_trials=80, timeout=180)
 best_xgb = study_xgb.best_params
 best_xgb.update({"n_estimators": 3000, "random_state": 42, "verbosity": 0, "tree_method": "hist"})
-model_xgb = xgb.XGBRegressor(**best_xgb, early_stopping_rounds=100)
-model_xgb.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)], verbose=False)
-preds_xgb = np.expm1(model_xgb.predict(X_val))
-
-sampler_cb = optuna.samplers.TPESampler(seed=777)
 
 def objective_cb(trial):
     params = {
@@ -182,36 +171,54 @@ def objective_cb(trial):
     m.fit(X_train, y_train_log, eval_set=(X_val, y_val_log), early_stopping_rounds=100)
     return evaluate(y_val, np.expm1(m.predict(X_val)))
 
-study_cb = optuna.create_study(direction="minimize", sampler=sampler_cb)
-study_cb.optimize(objective_cb, n_trials=60, timeout=240)
+study_cb = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=777))
+study_cb.optimize(objective_cb, n_trials=50, timeout=180)
 best_cb = study_cb.best_params
 best_cb.update({"iterations": 3000, "random_seed": 42, "verbose": 0})
-model_cb = CatBoostRegressor(**best_cb)
-model_cb.fit(X_train, y_train_log, eval_set=(X_val, y_val_log), early_stopping_rounds=100)
-preds_cb = np.expm1(model_cb.predict(X_val))
 
-def objective_blend(trial):
-    w1 = trial.suggest_float("lgb_w", 0.0, 1.0)
-    w2 = trial.suggest_float("xgb_w", 0.0, 1.0 - w1)
-    w3 = 1.0 - w1 - w2
-    blend = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
-    return evaluate(y_val, blend)
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+oof_lgb = np.zeros(len(X_train))
+oof_xgb = np.zeros(len(X_train))
+oof_cb = np.zeros(len(X_train))
+val_lgb = np.zeros(len(X_val))
+val_xgb = np.zeros(len(X_val))
+val_cb = np.zeros(len(X_val))
 
-study_blend = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=42))
-study_blend.optimize(objective_blend, n_trials=500)
-w1 = study_blend.best_params["lgb_w"]
-w2 = study_blend.best_params["xgb_w"]
-w3 = 1.0 - w1 - w2
+for fold_idx, (tr_idx, te_idx) in enumerate(kf.split(X_train)):
+    X_tr, X_te = X_train[tr_idx], X_train[te_idx]
+    y_tr, y_te = y_train_log[tr_idx], y_train_log[te_idx]
 
-preds = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
+    m1 = lgb.LGBMRegressor(**best_lgb)
+    m1.fit(X_tr, y_tr, eval_set=[(X_te, y_te)], callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
+    oof_lgb[te_idx] = m1.predict(X_te)
+    val_lgb += m1.predict(X_val) / 5
+
+    m2 = xgb.XGBRegressor(**best_xgb, early_stopping_rounds=100)
+    m2.fit(X_tr, y_tr, eval_set=[(X_te, y_te)], verbose=False)
+    oof_xgb[te_idx] = m2.predict(X_te)
+    val_xgb += m2.predict(X_val) / 5
+
+    m3 = CatBoostRegressor(**best_cb)
+    m3.fit(X_tr, y_tr, eval_set=(X_te, y_te), early_stopping_rounds=100)
+    oof_cb[te_idx] = m3.predict(X_te)
+    val_cb += m3.predict(X_val) / 5
+
+oof_stack = np.column_stack([oof_lgb, oof_xgb, oof_cb])
+val_stack = np.column_stack([val_lgb, val_xgb, val_cb])
+
+meta = Ridge(alpha=1.0)
+meta.fit(oof_stack, y_train_log)
+preds_log = meta.predict(val_stack)
+preds = np.expm1(preds_log)
+
 score = evaluate(y_val, preds)
 print_results(score)
 
-desc = (f"seeded-optuna 3-ens w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
+desc = (f"stacking Ridge meta, 5-fold OOF, "
         f"lgb={study_lgb.best_value:.0f} xgb={study_xgb.best_value:.0f} cb={study_cb.best_value:.0f}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LGB+XGB+CB-seeded-optuna")
+    mlflow.log_param("model", "Stacking-Ridge-LGB+XGB+CB")
     mlflow.log_param("description", desc[:250])
     mlflow.log_param("status", "keep")
