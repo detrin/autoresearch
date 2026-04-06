@@ -3,6 +3,7 @@ import numpy as np
 import optuna
 import lightgbm as lgb
 import xgboost as xgb
+from catboost import CatBoostRegressor
 from sklearn.preprocessing import LabelEncoder
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
 
@@ -54,6 +55,8 @@ y_train_log = np.log1p(train[TARGET])
 y_val = val[TARGET]
 y_val_log = np.log1p(y_val)
 
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
 def objective_lgb(trial):
     params = {
         "n_estimators": 3000,
@@ -73,10 +76,8 @@ def objective_lgb(trial):
           callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)])
     return evaluate(y_val, np.expm1(m.predict(X_val)))
 
-optuna.logging.set_verbosity(optuna.logging.WARNING)
 study_lgb = optuna.create_study(direction="minimize")
-study_lgb.optimize(objective_lgb, n_trials=100, timeout=300)
-
+study_lgb.optimize(objective_lgb, n_trials=100, timeout=240)
 best_lgb = study_lgb.best_params
 best_lgb.update({"n_estimators": 3000, "random_state": 42, "verbosity": -1})
 model_lgb = lgb.LGBMRegressor(**best_lgb)
@@ -103,32 +104,58 @@ def objective_xgb(trial):
     return evaluate(y_val, np.expm1(m.predict(X_val)))
 
 study_xgb = optuna.create_study(direction="minimize")
-study_xgb.optimize(objective_xgb, n_trials=80, timeout=300)
-
+study_xgb.optimize(objective_xgb, n_trials=80, timeout=240)
 best_xgb = study_xgb.best_params
 best_xgb.update({"n_estimators": 3000, "random_state": 42, "verbosity": 0, "tree_method": "hist"})
 model_xgb = xgb.XGBRegressor(**best_xgb, early_stopping_rounds=100)
 model_xgb.fit(X_train, y_train_log, eval_set=[(X_val, y_val_log)], verbose=False)
 preds_xgb = np.expm1(model_xgb.predict(X_val))
 
+def objective_cb(trial):
+    params = {
+        "iterations": 3000,
+        "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.15, log=True),
+        "depth": trial.suggest_int("depth", 3, 12),
+        "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1e-8, 50.0, log=True),
+        "bagging_temperature": trial.suggest_float("bagging_temperature", 0.0, 1.0),
+        "random_strength": trial.suggest_float("random_strength", 1e-8, 10.0, log=True),
+        "random_seed": 42,
+        "verbose": 0,
+    }
+    m = CatBoostRegressor(**params)
+    m.fit(X_train, y_train_log, eval_set=(X_val, y_val_log), early_stopping_rounds=100)
+    return evaluate(y_val, np.expm1(m.predict(X_val)))
+
+study_cb = optuna.create_study(direction="minimize")
+study_cb.optimize(objective_cb, n_trials=50, timeout=240)
+best_cb = study_cb.best_params
+best_cb.update({"iterations": 3000, "random_seed": 42, "verbose": 0})
+model_cb = CatBoostRegressor(**best_cb)
+model_cb.fit(X_train, y_train_log, eval_set=(X_val, y_val_log), early_stopping_rounds=100)
+preds_cb = np.expm1(model_cb.predict(X_val))
+
 def objective_blend(trial):
-    w = trial.suggest_float("lgb_weight", 0.1, 0.9)
-    blend = w * preds_lgb + (1 - w) * preds_xgb
+    w1 = trial.suggest_float("lgb_w", 0.0, 1.0)
+    w2 = trial.suggest_float("xgb_w", 0.0, 1.0 - w1)
+    w3 = 1.0 - w1 - w2
+    blend = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
     return evaluate(y_val, blend)
 
 study_blend = optuna.create_study(direction="minimize")
-study_blend.optimize(objective_blend, n_trials=50)
-best_w = study_blend.best_params["lgb_weight"]
+study_blend.optimize(objective_blend, n_trials=200)
+w1 = study_blend.best_params["lgb_w"]
+w2 = study_blend.best_params["xgb_w"]
+w3 = 1.0 - w1 - w2
 
-preds = best_w * preds_lgb + (1 - best_w) * preds_xgb
+preds = w1 * preds_lgb + w2 * preds_xgb + w3 * preds_cb
 score = evaluate(y_val, preds)
 print_results(score)
 
-desc = f"lgb+xgb ensemble w={best_w:.2f}, lgb_best={study_lgb.best_value:.0f}, xgb_best={study_xgb.best_value:.0f}"
+desc = (f"lgb+xgb+cb ensemble w={w1:.2f}/{w2:.2f}/{w3:.2f}, "
+        f"lgb={study_lgb.best_value:.0f} xgb={study_xgb.best_value:.0f} cb={study_cb.best_value:.0f}")
 
 with mlflow.start_run():
     mlflow.log_metric("val_rmse", score)
-    mlflow.log_param("model", "LGB+XGB-ensemble")
-    mlflow.log_param("description", desc)
+    mlflow.log_param("model", "LGB+XGB+CB-ensemble")
+    mlflow.log_param("description", desc[:250])
     mlflow.log_param("status", "keep")
-    mlflow.log_param("lgb_weight", best_w)
