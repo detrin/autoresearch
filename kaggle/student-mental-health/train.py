@@ -30,7 +30,7 @@ X_val = val[feature_cols]
 lgb_configs = [
     {"learning_rate": 0.024, "num_leaves": 231, "min_child_samples": 11, "subsample": 0.92, "colsample_bytree": 0.79, "reg_alpha": 0.33, "reg_lambda": 0.049, "random_state": 42},
     {"learning_rate": 0.02, "num_leaves": 127, "min_child_samples": 10, "subsample": 0.8, "colsample_bytree": 0.8, "reg_alpha": 0.1, "reg_lambda": 0.1, "random_state": 123},
-    {"learning_rate": 0.024, "num_leaves": 231, "min_child_samples": 11, "subsample": 0.92, "colsample_bytree": 0.79, "reg_alpha": 0.33, "reg_lambda": 0.049, "random_state": 777},
+    {"learning_rate": 0.02, "num_leaves": 127, "min_child_samples": 10, "subsample": 0.8, "colsample_bytree": 0.8, "reg_alpha": 0.1, "reg_lambda": 0.1, "random_state": 456},
 ]
 
 all_preds = []
@@ -48,11 +48,10 @@ for i, cfg in enumerate(lgb_configs):
     all_scores.append(s)
     print(f"  lgb{i+1}: {s:.6f}")
 
-preds_ensemble = np.mean(all_preds, axis=0)
+preds_ensemble = 0.5 * all_preds[0] + 0.25 * all_preds[1] + 0.25 * all_preds[2]
 preds_final = le_target.inverse_transform(np.argmax(preds_ensemble, axis=1))
 score = evaluate(val[TARGET], preds_final)
 print_results(score)
-print(f"  ensemble: {score:.6f}")
 
 results = [(f"lgb{i+1}", s) for i, s in enumerate(all_scores)] + [("ensemble", score)]
 for name, s in results:
@@ -60,6 +59,6 @@ for name, s in results:
 
 with mlflow.start_run():
     mlflow.log_metric("val_1-f1", score)
-    mlflow.log_param("model", "3xLGB_ensemble")
-    mlflow.log_param("description", "3 LGB models (2 configs + 1 extra seed) equal-weight ensemble")
+    mlflow.log_param("model", "3xLGB_v2_ensemble")
+    mlflow.log_param("description", "3 LGB: lgb1 + lgb2(seed123) + lgb2(seed456), weights 0.5/0.25/0.25")
     mlflow.log_param("status", "keep")
