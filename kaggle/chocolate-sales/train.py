@@ -1,4 +1,4 @@
-import subprocess, mlflow, lightgbm as lgb, pandas as pd, numpy as np
+import subprocess, mlflow, lightgbm as lgb, xgboost as xgb, pandas as pd, numpy as np
 from sklearn.preprocessing import LabelEncoder
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
 
@@ -41,23 +41,36 @@ for col in cat_cols:
 X_train, y_train = train[feature_cols], train[TARGET]
 X_val, y_val = val[feature_cols], val[TARGET]
 
-model = lgb.LGBMRegressor(
+lgb_model = lgb.LGBMRegressor(
     n_estimators=2000, learning_rate=0.05, num_leaves=255, random_state=42, n_jobs=-1,
-    min_child_samples=30, subsample=0.8, colsample_bytree=0.8,
-    reg_alpha=0.1, reg_lambda=0.1
+    min_child_samples=30, subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=0.1
 )
-model.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(100), lgb.log_evaluation(500)])
-preds = model.predict(X_val)
+lgb_model.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(100), lgb.log_evaluation(500)])
+lgb_preds = lgb_model.predict(X_val)
+
+xgb_model = xgb.XGBRegressor(
+    n_estimators=1000, learning_rate=0.05, max_depth=8, random_state=42, n_jobs=-1,
+    subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=0.1, tree_method="hist"
+)
+xgb_model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=500)
+xgb_preds = xgb_model.predict(X_val)
+
+preds = 0.6 * lgb_preds + 0.4 * xgb_preds
 
 score = evaluate(y_val, preds)
+lgb_score = evaluate(y_val, lgb_preds)
+xgb_score = evaluate(y_val, xgb_preds)
+print(f"LGB: {lgb_score:.6f}, XGB: {xgb_score:.6f}")
 print_results(score)
 
 commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode().strip()
-description = "LightGBM: 255 leaves, +margin_per_unit/weight, discount_flag"
+description = f"LGB+XGB ensemble 0.6/0.4 (lgb={lgb_score:.6f}, xgb={xgb_score:.6f})"
 
 with mlflow.start_run():
     mlflow.log_metric("val_mape", score)
-    mlflow.log_param("model", "LightGBM")
+    mlflow.log_metric("lgb_mape", lgb_score)
+    mlflow.log_metric("xgb_mape", xgb_score)
+    mlflow.log_param("model", "LGB+XGB")
     mlflow.log_param("commit", commit)
     mlflow.log_param("description", description)
     mlflow.log_param("status", "keep")
