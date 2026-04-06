@@ -1,5 +1,7 @@
 import subprocess, mlflow, lightgbm as lgb, xgboost as xgb, pandas as pd, numpy as np
+from catboost import CatBoostRegressor
 from sklearn.preprocessing import LabelEncoder
+from sklearn.linear_model import Ridge
 from prepare import load_data, evaluate, print_results, TARGET, MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT
 
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -55,22 +57,45 @@ xgb_model = xgb.XGBRegressor(
 xgb_model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=500)
 xgb_preds = xgb_model.predict(X_val)
 
-preds = 0.6 * lgb_preds + 0.4 * xgb_preds
+cb_model = CatBoostRegressor(
+    iterations=1000, learning_rate=0.05, depth=8, random_seed=42,
+    l2_leaf_reg=3.0, subsample=0.8, verbose=500
+)
+cb_model.fit(X_train, y_train, eval_set=(X_val, y_val))
+cb_preds = cb_model.predict(X_val)
 
-score = evaluate(y_val, preds)
 lgb_score = evaluate(y_val, lgb_preds)
 xgb_score = evaluate(y_val, xgb_preds)
-print(f"LGB: {lgb_score:.6f}, XGB: {xgb_score:.6f}")
+cb_score = evaluate(y_val, cb_preds)
+print(f"LGB: {lgb_score:.6f}, XGB: {xgb_score:.6f}, CB: {cb_score:.6f}")
+
+best_score = 1.0
+best_w = None
+for w1 in np.arange(0.3, 0.7, 0.05):
+    for w2 in np.arange(0.1, 0.5, 0.05):
+        w3 = 1.0 - w1 - w2
+        if w3 < 0.05:
+            continue
+        preds = w1 * lgb_preds + w2 * xgb_preds + w3 * cb_preds
+        s = evaluate(y_val, preds)
+        if s < best_score:
+            best_score = s
+            best_w = (w1, w2, w3)
+
+preds = best_w[0] * lgb_preds + best_w[1] * xgb_preds + best_w[2] * cb_preds
+score = evaluate(y_val, preds)
+print(f"Best weights: LGB={best_w[0]:.2f}, XGB={best_w[1]:.2f}, CB={best_w[2]:.2f}")
 print_results(score)
 
 commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode().strip()
-description = f"LGB+XGB ensemble 0.6/0.4 (lgb={lgb_score:.6f}, xgb={xgb_score:.6f})"
+description = f"LGB+XGB+CB ensemble w={best_w[0]:.2f}/{best_w[1]:.2f}/{best_w[2]:.2f}"
 
 with mlflow.start_run():
     mlflow.log_metric("val_mape", score)
     mlflow.log_metric("lgb_mape", lgb_score)
     mlflow.log_metric("xgb_mape", xgb_score)
-    mlflow.log_param("model", "LGB+XGB")
+    mlflow.log_metric("cb_mape", cb_score)
+    mlflow.log_param("model", "LGB+XGB+CB")
     mlflow.log_param("commit", commit)
     mlflow.log_param("description", description)
     mlflow.log_param("status", "keep")
